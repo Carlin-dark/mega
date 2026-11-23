@@ -1,0 +1,6 @@
+[
+    {
+        "merged": "com.megaanime.app-release-24:/drawable_ic_launcher.xml.flat",
+        "source": "com.megaanime.app-main-25:/drawable/ic_launcher.xml"
+    }
+]

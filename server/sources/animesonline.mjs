@@ -85,6 +85,10 @@ function episodesFromHtml(html, slug) {
     add(m[2], numberFrom(label, out.length + 1), label || null);
   }
 
+  // links curtos usados na home e no player: /anime/<slug>?ep=<numero>[&audio=leg|dub]
+  const epQueryRe = /href="[^"]*[?&]ep=(\d{1,4})(?:&(?:amp;)?audio=(leg|dub))?[^"]*"/gi;
+  for (const m of html.matchAll(epQueryRe)) add(m[1], Number(m[1]), null);
+
   const pathRe = new RegExp(`href="[^"]*\\/anime\\/${slug}\\/(?:episodio\\/)?(\\d+)"`, 'gi');
   for (const m of html.matchAll(pathRe)) add(m[1], Number(m[1]), null);
 
@@ -168,6 +172,7 @@ export async function anime(slug) {
     .map((g) => (typeof g === 'string' ? g : g?.nome || g?.name))
     .filter(Boolean);
 
+  const info = readJsonKey(rsc, 'anime') || {};
   const serie = readJsonKey(rsc, 'serie') || {};
   const temporadasRaw = serie.temporadas || readJsonKey(rsc, 'temporadas') || [];
   const idOf = (v) => (typeof v === 'string' ? v : v?.id ?? v?.episodio ?? v?.slug ?? v?.ep ?? null);
@@ -204,6 +209,28 @@ export async function anime(slug) {
     };
   }).filter((s) => s.episodes.length);
 
+  // fallback 1: lista de ids de episodios do payload (anime.episodeIds)
+  if (!seasons.length) {
+    const ids = Array.isArray(info.episodeIds) ? info.episodeIds : [];
+    const audios = Array.isArray(info.audios) && info.audios.length ? info.audios : ['leg'];
+    if (ids.length) {
+      seasons.push({
+        number: 1,
+        title: 'Temporada 1',
+        episodes: ids.map((id, i) => ({
+          id: String(id),
+          number: i + 1,
+          title: `Episodio ${i + 1}`,
+          thumb: null,
+          duration: null,
+          audio: audios.slice(),
+          ids: Object.fromEntries(audios.map((k) => [k, String(id)])),
+        })),
+      });
+    }
+  }
+
+  // fallback 2: botoes/links do DOM
   if (!seasons.length) {
     const eps = episodesFromHtml(html, slug);
     if (eps.length) seasons.push({ number: 1, title: 'Temporada 1', episodes: eps });
@@ -227,45 +254,87 @@ export async function anime(slug) {
 
 export async function streams(slug, epId, audio = 'leg', season = 1) {
   const rawId = String(epId || '').trim();
-  const id = encodeURIComponent(rawId);
+  const audioKey = audio === 'dub' ? 'dub' : 'leg';
   const foundIframes = [];
   const directSources = [];
-  let pageUrl = `${BASE}/anime/${slug}?ep=${id}`;
+
+  let epNumber = /^\d{1,4}$/.test(rawId) ? Number(rawId) : null;
+  let resolvedId = rawId;
+  let pageUrl = `${BASE}/anime/${slug}?ep=${encodeURIComponent(rawId)}`;
+
+  // 1) resolve o numero do episodio e o id real do audio pedido (leg/dub)
+  try {
+    const detail = await anime(slug);
+    const all = detail.seasons || [];
+    const se = all.find((s) => Number(s.number) === Number(season)) || all[0];
+    const match = (se?.episodes || []).find(
+      (e) =>
+        String(e.id) === rawId ||
+        String(e.ids?.[audioKey]) === rawId ||
+        Number(e.number) === Number(rawId)
+    );
+    if (match) {
+      if (match.number) epNumber = Number(match.number);
+      const byAudio = match.ids?.[audioKey];
+      if (byAudio) resolvedId = String(byAudio);
+    }
+  } catch {}
+
+  const watchUrl = (b) =>
+    `${b}/anime/${slug}?ep=${encodeURIComponent(String(epNumber ?? resolvedId))}${audioKey === 'dub' ? '&audio=dub' : ''}`;
+
+  const pushIframe = (u, base) => {
+    const abs = absUrl(u, base);
+    if (!abs || isBlockedEmbed(abs) || isAnimePageUrl(abs)) return;
+    if (!foundIframes.includes(abs)) foundIframes.push(abs);
+  };
 
   const collectFromHtml = (html, baseUrl) => {
     const unescaped = decodeEntities(String(html || ''))
       .replace(/\\u0026/g, '&')
       .replace(/\\\//g, '/');
 
-    for (const m of unescaped.matchAll(/<iframe[^>]+src=["']([^"']+)["']/gi)) {
-      const u = absUrl(m[1], baseUrl);
-      if (u && !isBlockedEmbed(u) && !isAnimePageUrl(u)) foundIframes.push(u);
-    }
+    for (const m of unescaped.matchAll(/<iframe[^>]+src=["']([^"']+)["']/gi)) pushIframe(m[1], baseUrl);
 
     for (const m of unescaped.matchAll(/(?:https?:)?\/\/www\.blogger\.com\/video\.g\?token=[A-Za-z0-9_=-]+/gi)) {
-      foundIframes.push(m[0].startsWith('http') ? m[0] : `https:${m[0]}`);
+      pushIframe(m[0].startsWith('http') ? m[0] : `https:${m[0]}`, baseUrl);
     }
 
     for (const m of unescaped.matchAll(/https?:\/\/[^"'\s<>\\]+(?:embed|player|video\.g|stream)[^"'\s<>\\]*/gi)) {
-      const u = absUrl(m[0], baseUrl);
-      if (u && !isBlockedEmbed(u) && !isAnimePageUrl(u)) foundIframes.push(u);
+      pushIframe(m[0], baseUrl);
     }
 
     directSources.push(...extractDirectVideosFromText(unescaped, baseUrl));
   };
 
+  // 2) API interna do episodio: e a UNICA fonte do iframe do player.
+  //    GET /api/episodio/<episodeId> -> { playerUrl: "https://www.blogger.com/video.g?token=..." }
   for (const b of BASES) {
-    const candidates = [
-      `${b}/anime/${slug}?ep=${id}&t=${season}${audio === 'dub' ? '&audio=dub' : ''}`,
-      `${b}/anime/${slug}?ep=${id}${audio === 'dub' ? '&audio=dub' : ''}`,
-      `${b}/anime/${slug}?ep=${id}`,
-      `${b}/anime/${slug}/${id}`,
-    ];
+    const apiUrl = `${b}/api/episodio/${encodeURIComponent(resolvedId)}`;
+    const res = await fetchText(apiUrl, { referer: watchUrl(b), cacheTtl: 0, timeout: 15000 });
+    if (!res.ok || !res.body) continue;
 
-    for (const url of candidates) {
-      const res = await fetchText(url, { referer: `${b}/anime/${slug}`, cacheTtl: 0, timeout: 15000 });
+    let data = null;
+    try { data = JSON.parse(res.body); } catch { data = null; }
+    if (!data || typeof data !== 'object') continue;
+
+    pageUrl = watchUrl(b);
+    for (const field of ['playerUrl', 'player', 'iframe', 'embed']) {
+      if (typeof data[field] === 'string' && data[field]) pushIframe(data[field], b);
+    }
+    for (const m of String(res.body).matchAll(/https?:\/\/[^"'\s<>\\]+/g)) {
+      if (/blogger\.com\/video\.g|videoplayback|\.mp4(\?|$)|\.m3u8(\?|$)/.test(m[0])) pushIframe(m[0], b);
+    }
+
+    if (foundIframes.length) break;
+  }
+
+  // 3) fallback: varre o HTML do episodio e o payload RSC
+  if (!foundIframes.length && !directSources.length) {
+    for (const b of BASES) {
+      const res = await fetchText(watchUrl(b), { referer: `${b}/anime/${slug}`, cacheTtl: 0, timeout: 15000 });
       if (!res.ok || !res.body) continue;
-      pageUrl = url;
+      pageUrl = watchUrl(b);
 
       collectFromHtml(res.body, b);
       const rsc = readRsc(res.body);
@@ -273,10 +342,9 @@ export async function streams(slug, epId, audio = 'leg', season = 1) {
 
       if (foundIframes.length || directSources.length) break;
     }
-    if (foundIframes.length || directSources.length) break;
   }
 
-  const iframes = uniqueBy(foundIframes, (x) => x).filter((u) => !isAnimePageUrl(u));
+  const iframes = uniqueBy(foundIframes, (x) => x);
   const resolved = await resolveStreams(iframes, pageUrl);
   const sources = uniqueBy([...directSources, ...resolved], (s) => s.url);
 
@@ -284,7 +352,9 @@ export async function streams(slug, epId, audio = 'leg', season = 1) {
     source: meta.id,
     slug,
     episode: rawId,
-    audio,
+    episodeNumber: epNumber ?? null,
+    epId: resolvedId,
+    audio: audioKey,
     season,
     pageUrl,
     iframes,
