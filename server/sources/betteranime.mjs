@@ -4,7 +4,6 @@ import { resolveStreams, extractDirectVideosFromText, isAnimePageUrl, isBlockedE
 
 const BASES = ['https://betteranime.io', 'https://betteranime.net'];
 const BASE = BASES[0];
-const CARD_RE = /<a\b[^>]*href="([^"]*\/animes\/[^"?#]+)"[^>]*>([\s\S]*?)<\/a>/gi;
 
 export const meta = { id: 'betteranime', name: 'BetterAnime', base: BASE, lang: 'pt-BR', audio: ['leg', 'dub'] };
 
@@ -12,33 +11,47 @@ const rootOf = (slug) => String(slug || '').replace(/\/+$/, '').replace(/-dublad
 const seasonOf = (slug) => Number(String(slug || '').match(/-(\d+)(?:-dublado)?\/?$/)?.[1]) || 1;
 
 function epSlug(slug, season, audio, num) {
-  const root = rootOf(slug);
-  return [root, Number(season) > 1 ? String(Number(season)) : '', audio === 'dub' ? 'dublado' : '', `episodio-${num}`]
+  return [rootOf(slug), Number(season) > 1 ? String(Number(season)) : '', audio === 'dub' ? 'dublado' : '', `episodio-${num}`]
     .filter(Boolean).join('-');
 }
 
 function fixRef(list) {
-  return list.map((s) => ({
-    ...s,
-    referer: /googlevideo\.com/i.test(s.url) ? 'https://www.blogger.com/' : (s.referer || undefined),
-  }));
+  return list.map((s) => ({ ...s, referer: /googlevideo\.com/i.test(s.url) ? 'https://www.blogger.com/' : (s.referer || undefined) }));
+}
+
+const LINK_RE = /(?:href|data-href|data-url)="([^"]*\/(?:animes|anime)\/[^"?#]+)"/gi;
+
+export function harvest(html, base = BASE) {
+  const out = [];
+  const seen = new Set();
+  const push = (raw) => {
+    const abs = absUrl(raw, base);
+    if (!abs) return;
+    const m = abs.match(/\/(?:animes|anime)\/([^/?#]+)/);
+    if (!m) return;
+    const slug = m[1].replace(/\/+$/, '');
+    if (!slug || seen.has(slug)) return;
+    seen.add(slug);
+    out.push({ slug, title: titleFromSlug(slug), poster: null });
+  };
+  for (const m of String(html || '').matchAll(LINK_RE)) push(m[1]);
+  for (const m of String(html || '').matchAll(/https?:\/\/[^"'\s<>\\]+\/(?:animes|anime)\/[^"'\s<>\\?#]+/gi)) push(m[0]);
+  return out;
 }
 
 export function parseCards(html, base = BASE) {
-  const out = [];
-  for (const m of html.matchAll(CARD_RE)) {
-    const abs = absUrl(m[1], base);
-    if (!abs) continue;
-    const slug = abs.split('/animes/')[1].replace(/[?#].*$/, '').replace(/\/+$/, '');
-    if (!slug) continue;
-    const title =
-      cleanText(m[2].match(/title="([^"]*)"/)?.[1]) ||
-      cleanText(m[2].match(/alt="([^"]*)"/)?.[1]) ||
-      titleFromSlug(slug);
-    const img = m[2].match(/(?:src|data-src|data-lazy-src)="([^"]+\.(?:jpg|jpeg|png|webp)[^"]*)"/i)?.[1];
-    out.push({ slug, title, poster: img ? absUrl(img, base) : null });
+  const cards = harvest(html, base);
+  const doc = String(html || '');
+  for (const c of cards) {
+    const i = doc.indexOf(`/animes/${c.slug}`);
+    if (i < 0) continue;
+    const win = doc.slice(Math.max(0, i - 600), i + 600);
+    const t = cleanText(win.match(/title="([^"]*)"/)?.[1]) || cleanText(win.match(/alt="([^"]*)"/)?.[1]);
+    if (t) c.title = t;
+    const img = win.match(/(?:src|data-src|data-lazy-src)="([^"]+\.(?:jpg|jpeg|png|webp)[^"]*)"/i)?.[1];
+    if (img) c.poster = absUrl(img, base);
   }
-  return uniqueBy(out, (c) => c.slug);
+  return uniqueBy(cards, (c) => c.slug);
 }
 
 async function first(paths, opts = {}) {
@@ -49,6 +62,28 @@ async function first(paths, opts = {}) {
     }
   }
   return null;
+}
+
+async function wpSearch(q) {
+  const enc = encodeURIComponent(q);
+  for (const b of BASES) {
+    for (const p of [`/wp-json/wp/v2/search?search=${enc}&per_page=20`, `/wp-json/wp/v2/animes?search=${enc}&per_page=20`]) {
+      const res = await fetchText(`${b}${p}`, { referer: `${b}/`, cacheTtl: 20_000, timeout: 12_000 });
+      if (!res.ok || !res.body.trim().startsWith('[')) continue;
+      try {
+        const list = JSON.parse(res.body);
+        const items = list
+          .map((x) => {
+            const u = x.url || x.link || '';
+            const slug = (u.match(/\/(?:animes|anime)\/([^/?#]+)/) || [])[1];
+            return slug ? { slug, title: decodeEntities(x.title || titleFromSlug(slug)), poster: null } : null;
+          })
+          .filter(Boolean);
+        if (items.length) return uniqueBy(items, (i) => i.slug);
+      } catch {}
+    }
+  }
+  return [];
 }
 
 export async function home() {
@@ -68,7 +103,9 @@ export async function catalog(page = 1) {
 }
 
 export async function search(q) {
-  const hit = await first([`/?s=${encodeURIComponent(q)}`], { cacheTtl: 30_000 });
+  const fromWp = await wpSearch(q);
+  if (fromWp.length) return fromWp;
+  const hit = await first([`/home/?s=${encodeURIComponent(q)}`, `/?s=${encodeURIComponent(q)}`], { cacheTtl: 30_000 });
   if (!hit) return [];
   return parseCards(hit.res.body, hit.base);
 }
@@ -85,11 +122,12 @@ export async function anime(slug) {
     titleFromSlug(slug);
 
   const isDub = /-dublado/i.test(slug);
-  const nums = [];
+  const nums = new Set();
   const epRe = new RegExp(`/episodios/${rootOf(slug)}(?:-\\d+)?(?:-dublado)?-episodio-(\\d+)`, 'gi');
-  for (const m of html.matchAll(epRe)) nums.push(Number(m[1]));
+  for (const m of html.matchAll(epRe)) nums.add(Number(m[1]));
+  for (const m of html.matchAll(/episodio[-/](\d{1,4})/gi)) nums.add(Number(m[1]));
 
-  const uniq = [...new Set(nums)].filter((n) => n > 0).sort((a, b) => a - b);
+  const uniq = [...nums].filter((n) => n > 0).sort((a, b) => a - b);
 
   return {
     source: meta.id,
@@ -108,13 +146,8 @@ export async function anime(slug) {
           number: seasonOf(slug),
           title: `Temporada ${seasonOf(slug)}`,
           episodes: uniq.map((n) => ({
-            id: String(n),
-            number: n,
-            title: `Episodio ${n}`,
-            thumb: null,
-            duration: null,
-            audio: [isDub ? 'dub' : 'leg'],
-            ids: { leg: String(n), dub: String(n) },
+            id: String(n), number: n, title: `Episodio ${n}`, thumb: null, duration: null,
+            audio: [isDub ? 'dub' : 'leg'], ids: { leg: String(n), dub: String(n) },
           })),
         }]
       : [],
@@ -141,6 +174,7 @@ export async function streams(slug, epId, audio = 'leg', season = 1) {
     for (const m of txt.matchAll(/(?:https?:)?\/\/www\.blogger\.com\/video\.g\?token=[A-Za-z0-9_=-]+/gi)) {
       push(m[0].startsWith('http') ? m[0] : `https:${m[0]}`, base);
     }
+    for (const m of txt.matchAll(/https?:\/\/[^"'\s<>\\]+(?:embed|player|video\.g)[^"'\s<>\\]*/gi)) push(m[0], base);
     direct.push(...extractDirectVideosFromText(txt, base));
   };
 

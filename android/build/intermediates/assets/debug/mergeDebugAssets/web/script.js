@@ -217,7 +217,7 @@ function card(a, ep, srcOverride) {
   return el;
 }
 
-async function jsonWithTimeout(url, ms = 6000) {
+async function jsonWithTimeout(url, ms = 5000) {
   const controller = new AbortController();
   const id = setTimeout(() => controller.abort(), ms);
   try {
@@ -234,7 +234,7 @@ async function jsonWithTimeout(url, ms = 6000) {
     throw e;
   }
 }
-const json = (u) => jsonWithTimeout(u, 7000);
+const json = (u) => jsonWithTimeout(u, 6000);
 
 async function fetchSources() {
   try {
@@ -326,7 +326,6 @@ if (document.body.dataset.page === 'home') {
 
   /* Fast Cached & Parallel Home Loader */
   async function loadHome() {
-    // Check local Home Cache for immediate instant paint
     const cachedHome = store.get('cache_home_' + currentSource);
     if (cachedHome && cachedHome.length) {
       heroPool = cachedHome.slice(0, 8);
@@ -347,11 +346,10 @@ if (document.body.dataset.page === 'home') {
       cont.slice(0, 12).forEach(c => $('#continue').appendChild(card(c, c.ep, c.source || currentSource)));
     }
 
-    // Parallel fetch sources + home data
     try {
       const [sourcesRes, homeRes] = await Promise.allSettled([
         fetchSources(),
-        jsonWithTimeout(`${API}/api/home?source=${encodeURIComponent(currentSource)}`, 6000)
+        jsonWithTimeout(`${API}/api/home?source=${encodeURIComponent(currentSource)}`, 5000)
       ]);
 
       if (sourcesRes.status === 'fulfilled' && sourcesRes.value) {
@@ -363,7 +361,6 @@ if (document.body.dataset.page === 'home') {
         list = asList(homeRes.value);
       }
 
-      // If current source failed or returned empty, try fallback source in background
       if (!list.length) {
         for (const s of availableSources) {
           if (s.id === currentSource) continue;
@@ -408,7 +405,7 @@ if (document.body.dataset.page === 'home') {
     if (busy || done) return;
     busy = true;
     try {
-      const list = asList(await jsonWithTimeout(`${API}/api/catalog?page=${++page}&source=${encodeURIComponent(currentSource)}`, 6000));
+      const list = asList(await jsonWithTimeout(`${API}/api/catalog?page=${++page}&source=${encodeURIComponent(currentSource)}`, 5000));
       if (!list.length) done = true;
       else list.forEach(a => $('#catalog').appendChild(card(a, null, currentSource)));
     } catch {}
@@ -441,7 +438,7 @@ if (document.body.dataset.page === 'home') {
   $('#btn-search').onclick = () => { $('#searchbar').classList.toggle('hide'); $('#q').focus(); };
   $('#btn-bell').onclick = () => { show('home'); toast('Novos episódios na Home'); };
 
-  /* REQUIREMENT 2: UNIFIED PARALLEL MULTI-SOURCE SEARCH */
+  /* UNIFIED PARALLEL MULTI-SOURCE SEARCH */
   $('#searchbar').onsubmit = async (e) => {
     e.preventDefault();
     const q = $('#q').value.trim();
@@ -451,7 +448,7 @@ if (document.body.dataset.page === 'home') {
     box.innerHTML = '<p class="empty">Buscando em todas as fontes em paralelo…</p>';
     try {
       const sources = await fetchSources();
-      const promises = sources.map(s => jsonWithTimeout(`${API}/api/search?q=${encodeURIComponent(q)}&source=${s.id}`, 5000).catch(() => null));
+      const promises = sources.map(s => jsonWithTimeout(`${API}/api/search?q=${encodeURIComponent(q)}&source=${s.id}`, 4500).catch(() => null));
       const settled = await Promise.allSettled(promises);
       let allResults = [];
       settled.forEach((res, idx) => {
@@ -498,8 +495,10 @@ if (document.body.dataset.page === 'home') {
     });
   }
 
-  /* REQUIREMENT 8: CALENDAR UP TO 2030 WITH JIKAN FALLBACK */
+  /* CALENDAR UP TO 2030 WITH UNBLOCKABLE PARALLEL & TIMEOUT FALLBACK */
   let seasonsReady = false;
+  let currentSeasonReqId = 0;
+
   function initSeasons() {
     const sel = $('#s-year');
     if (sel && !sel.options.length) {
@@ -515,69 +514,92 @@ if (document.body.dataset.page === 'home') {
     if (!seasonsReady) { seasonsReady = true; loadSeason(); }
   }
 
+  function renderSeasonCards(box, list) {
+    box.innerHTML = '';
+    list.forEach(m => {
+      const titleEsc = esc(m.title || '');
+      const el = document.createElement('a');
+      el.className = 'card';
+      el.href = '#';
+      const coverSrc = m.cover ? (m.cover.startsWith('http') ? esc(m.cover) : img(m.cover)) : '';
+      el.innerHTML = `${coverSrc ? `<img loading="lazy" src="${coverSrc}" alt="${titleEsc}" onerror="this.onerror=null; getPosterFallback('${titleEsc}').then(u=>{if(u)this.src=u});">` : '<div style="aspect-ratio:2/3;background:#1b1b22"></div>'}
+        ${m.score ? `<span class="ep">${ICONS.star} ${Number(m.score).toFixed(1)}</span>` : ''}
+        <div class="cap"><b>${titleEsc}</b><small>${esc(m.type || m.day || m.year || '')}</small></div>`;
+      el.onclick = async (e) => {
+        e.preventDefault();
+        if (m.slug) return location.href = `detail.html?source=${encodeURIComponent(currentSource)}&slug=${encodeURIComponent(m.slug)}`;
+        toast('Procurando no catálogo…');
+        try {
+          const r = asList(await json(`${API}/api/search?q=${encodeURIComponent(m.title)}`));
+          if (r[0]) location.href = `detail.html?source=${encodeURIComponent(r[0].source || currentSource)}&slug=${encodeURIComponent(r[0].slug)}`;
+          else toast('Não disponível nas fontes');
+        } catch { toast('Falha na busca'); }
+      };
+      box.appendChild(el);
+    });
+  }
+
   async function loadSeason(season) {
+    const reqId = ++currentSeasonReqId;
     const s = season || $('[data-s].on')?.dataset.s || 'winter';
     const y = $('#s-year')?.value || new Date().getFullYear();
     const box = $('#season-grid');
-    box.innerHTML = '<p class="empty">Carregando lançamentos da temporada…</p>';
+
+    const cacheKey = `cache_season_${y}_${s}`;
+    const cached = store.get(cacheKey);
+    if (cached && cached.length) {
+      renderSeasonCards(box, cached);
+    } else {
+      box.innerHTML = '<p class="empty">Carregando lançamentos da temporada…</p>';
+    }
+
     try {
       let list = [];
-      try {
-        list = asList(await jsonWithTimeout(`${API}/api/seasons/${y}/${s}`, 5000));
-      } catch {}
+      const p1 = jsonWithTimeout(`${API}/api/seasons/${y}/${s}`, 4000).catch(() => null);
+      const p2 = jsonWithTimeout(`https://api.jikan.moe/v4/seasons/${y}/${s}`, 4000).then(res => {
+        if (Array.isArray(res?.data)) {
+          return res.data.map(item => ({
+            title: item.title,
+            cover: item.images?.jpg?.large_image_url || item.images?.jpg?.image_url,
+            score: item.score,
+            type: item.type,
+            year: y
+          }));
+        }
+        return null;
+      }).catch(() => null);
 
-      // Fallback to Jikan Seasons API
-      if (!list || !list.length) {
-        try {
-          const jikan = await fetch(`https://api.jikan.moe/v4/seasons/${y}/${s}`).then(r => r.json());
-          if (Array.isArray(jikan?.data)) {
-            list = jikan.data.map(item => ({
-              title: item.title,
-              cover: item.images?.jpg?.large_image_url || item.images?.jpg?.image_url,
-              score: item.score,
-              type: item.type,
-              year: y
-            }));
-          }
-        } catch {}
+      const [res1, res2] = await Promise.allSettled([p1, p2]);
+      if (res1.status === 'fulfilled' && res1.value) {
+        list = asList(res1.value);
+      }
+      if ((!list || !list.length) && res2.status === 'fulfilled' && res2.value) {
+        list = res2.value;
       }
 
       if (!list || !list.length) {
         try {
-          list = asList(await jsonWithTimeout(`${API}/api/calendar`, 5000));
+          list = asList(await jsonWithTimeout(`${API}/api/calendar`, 3000));
         } catch {}
       }
 
-      box.innerHTML = '';
-      if (!list || !list.length) return failBox(box, 'Nada encontrado nesta temporada.', () => loadSeason(s));
+      if (reqId !== currentSeasonReqId) return;
 
-      list.forEach(m => {
-        const titleEsc = esc(m.title || '');
-        const el = document.createElement('a');
-        el.className = 'card';
-        el.href = '#';
-        const coverSrc = m.cover ? (m.cover.startsWith('http') ? esc(m.cover) : img(m.cover)) : '';
-        el.innerHTML = `${coverSrc ? `<img loading="lazy" src="${coverSrc}" alt="${titleEsc}" onerror="this.onerror=null; getPosterFallback('${titleEsc}').then(u=>{if(u)this.src=u});">` : '<div style="aspect-ratio:2/3;background:#1b1b22"></div>'}
-          ${m.score ? `<span class="ep">${ICONS.star} ${Number(m.score).toFixed(1)}</span>` : ''}
-          <div class="cap"><b>${titleEsc}</b><small>${esc(m.type || m.day || '')}</small></div>`;
-        el.onclick = async (e) => {
-          e.preventDefault();
-          if (m.slug) return location.href = `detail.html?source=${encodeURIComponent(currentSource)}&slug=${encodeURIComponent(m.slug)}`;
-          toast('Procurando no catálogo…');
-          try {
-            const r = asList(await json(`${API}/api/search?q=${encodeURIComponent(m.title)}`));
-            if (r[0]) location.href = `detail.html?source=${encodeURIComponent(r[0].source || currentSource)}&slug=${encodeURIComponent(r[0].slug)}`;
-            else toast('Não disponível nas fontes');
-          } catch { toast('Falha na busca'); }
-        };
-        box.appendChild(el);
-      });
+      if (list && list.length) {
+        store.set(cacheKey, list.slice(0, 50));
+        renderSeasonCards(box, list);
+      } else if (!cached || !cached.length) {
+        failBox(box, `Nenhum anime encontrado para ${s.toUpperCase()} / ${y}.`, () => loadSeason(s));
+      }
     } catch {
-      failBox(box, 'Falha ao carregar temporada.', () => loadSeason(s));
+      if (reqId !== currentSeasonReqId) return;
+      if (!cached || !cached.length) {
+        failBox(box, 'Falha ao carregar temporada. Tente novamente.', () => loadSeason(s));
+      }
     }
   }
 
-  /* REQUIREMENT 6 & 7: PROFILE PREFERENCES SAVING */
+  /* PROFILE PREFERENCES SAVING */
   function renderProfile() {
     $('#p-stats').textContent = `${favs().length} salvos · ${store.get('dls', []).length} downloads`;
 
@@ -1022,7 +1044,6 @@ if (document.body.dataset.page === 'player') {
         return;
       }
 
-      // Pick stream according to preferred quality if possible
       let best = list[list.length - 1];
       if (qualityPref !== 'auto') {
         const match = list.find(s => String(s.quality || s.label || '').includes(qualityPref));
@@ -1032,7 +1053,6 @@ if (document.body.dataset.page === 'player') {
       const rawBestSrc = best.proxyUrl ? `${API}${best.proxyUrl}` : best.url;
       const bestSrc = unwrapOEmbed(rawBestSrc) || rawBestSrc;
 
-      /* REQUIREMENT 4: Immersive Player Layout & Auto Fullscreen Request */
       $('#stage').innerHTML = `<div class="adv-player-wrapper" style="position:relative;width:100%;height:100%;background:#000">
         <video id="v" playsinline crossorigin style="width:100%;height:100%;display:block"></video>
         <div class="adv-overlay" style="position:absolute;inset:0;pointer-events:none;display:flex;flex-direction:column;justify-content:space-between;padding:12px">
@@ -1059,7 +1079,6 @@ if (document.body.dataset.page === 'player') {
       video.src = bestSrc;
       if (info?.cover) video.poster = info.cover.startsWith('http') ? info.cover : img(info.cover);
 
-      // REQUIREMENT 4: Automatic Fullscreen Request
       const triggerFullscreen = () => {
         try {
           if (video.requestFullscreen) video.requestFullscreen().catch(() => {});

@@ -4,32 +4,46 @@ import { resolveStreams, extractDirectVideosFromText, isAnimePageUrl, isBlockedE
 
 const BASES = ['https://flixnet.cfd/animefire', 'https://anitube.vip'];
 const BASE = BASES[0];
-const CARD_RE = /<a\b[^>]*href="([^"]*\/(?:anime|animes)\/[^"?#]+)"[^>]*>([\s\S]*?)<\/a>/gi;
 
 export const meta = { id: 'anitube', name: 'Anitube', base: BASE, lang: 'pt-BR', audio: ['leg', 'dub'] };
 
 function fixRef(list) {
-  return list.map((s) => ({
-    ...s,
-    referer: /googlevideo\.com/i.test(s.url) ? 'https://www.blogger.com/' : (s.referer || undefined),
-  }));
+  return list.map((s) => ({ ...s, referer: /googlevideo\.com/i.test(s.url) ? 'https://www.blogger.com/' : (s.referer || undefined) }));
+}
+
+const LINK_RE = /(?:href|data-href|data-url)="([^"]*\/(?:anime|animes)\/[^"?#]+)"/gi;
+
+export function harvest(html, base = BASE) {
+  const out = [];
+  const seen = new Set();
+  const push = (raw) => {
+    const abs = absUrl(raw, base);
+    if (!abs) return;
+    const m = abs.match(/\/(?:anime|animes)\/([^/?#]+)/);
+    if (!m) return;
+    const slug = m[1].replace(/\/+$/, '');
+    if (!slug || seen.has(slug) || /^(pesquisar|genero|atualizados)$/i.test(slug)) return;
+    seen.add(slug);
+    out.push({ slug, title: titleFromSlug(slug), poster: null });
+  };
+  for (const m of String(html || '').matchAll(LINK_RE)) push(m[1]);
+  for (const m of String(html || '').matchAll(/https?:\/\/[^"'\s<>\\]+\/(?:anime|animes)\/[^"'\s<>\\?#]+/gi)) push(m[0]);
+  return out;
 }
 
 export function parseCards(html, base = BASE) {
-  const out = [];
-  for (const m of html.matchAll(CARD_RE)) {
-    const abs = absUrl(m[1], base);
-    if (!abs) continue;
-    const slug = (abs.split('/anime/')[1] || '').replace(/[?#].*$/, '').replace(/\/+$/, '');
-    if (!slug || /\//.test(slug)) continue;
-    const title =
-      cleanText(m[2].match(/title="([^"]*)"/)?.[1]) ||
-      cleanText(m[2].match(/alt="([^"]*)"/)?.[1]) ||
-      titleFromSlug(slug);
-    const img = m[2].match(/(?:src|data-src|data-original)="([^"]+\.(?:jpg|jpeg|png|webp)[^"]*)"/i)?.[1];
-    out.push({ slug, title, poster: img ? absUrl(img, base) : null });
+  const cards = harvest(html, base);
+  const doc = String(html || '');
+  for (const c of cards) {
+    const i = doc.indexOf(`/anime/${c.slug}`);
+    if (i < 0) continue;
+    const win = doc.slice(Math.max(0, i - 600), i + 600);
+    const t = cleanText(win.match(/title="([^"]*)"/)?.[1]) || cleanText(win.match(/alt="([^"]*)"/)?.[1]);
+    if (t) c.title = t;
+    const img = win.match(/(?:src|data-src|data-original)="([^"]+\.(?:jpg|jpeg|png|webp)[^"]*)"/i)?.[1];
+    if (img) c.poster = absUrl(img, base);
   }
-  return uniqueBy(out, (c) => c.slug);
+  return uniqueBy(cards, (c) => c.slug);
 }
 
 async function first(paths, opts = {}) {
@@ -59,10 +73,8 @@ export async function catalog(page = 1) {
 }
 
 export async function search(q) {
-  const hit = await first(
-    [`/search?q=${encodeURIComponent(q)}`, `/?s=${encodeURIComponent(q)}`, `/animes/pesquisar?q=${encodeURIComponent(q)}`],
-    { cacheTtl: 30_000 }
-  );
+  const enc = encodeURIComponent(q);
+  const hit = await first([`/search?q=${enc}`, `/?s=${enc}`, `/animes/pesquisar?q=${enc}`], { cacheTtl: 30_000 });
   if (!hit) return [];
   return parseCards(hit.res.body, hit.base);
 }
@@ -78,16 +90,17 @@ export async function anime(slug) {
     cleanText(html.match(/<title>([\s\S]*?)<\/title>/)?.[1]).replace(/\s*[-|].*$/, '') ||
     titleFromSlug(slug);
 
-  const nums = [];
+  const nums = new Set();
   for (const pat of [
     new RegExp(`href="[^"]*\\/anime\\/${slug}\\/episodio\\/(\\d+)"`, 'gi'),
     new RegExp(`href="[^"]*\\/anime\\/${slug}\\/(\\d+)"`, 'gi'),
     new RegExp(`/episodios/${slug}-episodio-(\\d+)`, 'gi'),
+    /episodio[-/](\d{1,4})/gi,
   ]) {
-    for (const m of html.matchAll(pat)) nums.push(Number(m[1]));
+    for (const m of html.matchAll(pat)) nums.add(Number(m[1]));
   }
 
-  const uniq = [...new Set(nums)].filter((n) => n > 0).sort((a, b) => a - b);
+  const uniq = [...nums].filter((n) => n > 0).sort((a, b) => a - b);
   const isDub = /dublado/i.test(titulo) || /-dublado/i.test(slug);
 
   return {
@@ -107,10 +120,8 @@ export async function anime(slug) {
           number: 1,
           title: 'Temporada 1',
           episodes: uniq.map((n) => ({
-            id: String(n), number: n, title: `Episodio ${n}`,
-            thumb: null, duration: null,
-            audio: [isDub ? 'dub' : 'leg'],
-            ids: { leg: String(n), dub: String(n) },
+            id: String(n), number: n, title: `Episodio ${n}`, thumb: null, duration: null,
+            audio: [isDub ? 'dub' : 'leg'], ids: { leg: String(n), dub: String(n) },
           })),
         }]
       : [],
@@ -137,6 +148,7 @@ export async function streams(slug, epId, audio = 'leg', season = 1) {
     for (const m of txt.matchAll(/(?:https?:)?\/\/www\.blogger\.com\/video\.g\?token=[A-Za-z0-9_=-]+/gi)) {
       push(m[0].startsWith('http') ? m[0] : `https:${m[0]}`, base);
     }
+    for (const m of txt.matchAll(/https?:\/\/[^"'\s<>\\]+(?:embed|player|video\.g)[^"'\s<>\\]*/gi)) push(m[0], base);
     direct.push(...extractDirectVideosFromText(txt, base));
   };
 
