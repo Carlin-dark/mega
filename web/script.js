@@ -1,5 +1,7 @@
 /* Mega Anime — Refactored & Optimized with Jikan Fallback, Servidores 1-5, Fast Home, Calendar 2030 & Preferences */
 const API = (window.API_BASE || 'https://mega-la8q.onrender.com').replace(/\/+$/, '');
+const SITE_BASE = 'https://carlin-dark.github.io/Mega-Anime/';
+const SHARE_BASE = SITE_BASE + 'share.html';
 const $ = (s, r = document) => r.querySelector(s);
 const $$ = (s, r = document) => [...r.querySelectorAll(s)];
 const esc = (s = '') => String(s).replace(/[&<>"]/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]));
@@ -50,6 +52,25 @@ const ICONS = {
   site: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" style="width:13px;height:13px;margin-right:4px"><path d="M14 3h7v7"/><path d="M10 14 21 3"/><path d="M21 14v6a1 1 0 0 1-1 1H4a1 1 0 0 1-1-1V4a1 1 0 0 1 1-1h6"/></svg>'
 };
 
+/* ===== link público de compartilhamento (abre no site, que tenta abrir o app) ===== */
+function shareUrl(params = {}) {
+  const q = new URLSearchParams();
+  ['source', 'slug', 'season', 'ep', 'audio'].forEach((k) => {
+    const v = params[k];
+    if (v !== undefined && v !== null && v !== '') q.set(k, String(v));
+  });
+  return `${SHARE_BASE}?${q.toString()}`;
+}
+
+async function copyShare(url, title) {
+  if (navigator.share) {
+    try { await navigator.share({ title: title || 'MEGA ANIME', text: title || '', url }); return; }
+    catch (e) { if (e && e.name === 'AbortError') return; }
+  }
+  try { await navigator.clipboard.writeText(url); toast('Link copiado'); }
+  catch { window.prompt('Copie o link:', url); }
+}
+
 /* Robust Poster Fallback via Jikan API & AniList */
 const posterFallbackCache = {};
 async function getPosterFallback(title) {
@@ -94,6 +115,46 @@ async function getPosterFallback(title) {
   return null;
 }
 const getJikanCover = getPosterFallback;
+
+/* ===== Jikan como catálogo de apoio (busca e detalhe) ===== */
+const cleanTitle = (t = '') => String(t).replace(/\b(dub\w*|leg\w*|temporada\w*|\d+ª?|eps?\.?\s*\d+)\b/gi, '').trim();
+
+async function jikanSearch(q, limit = 12) {
+  try {
+    const r = await fetch(`https://api.jikan.moe/v4/anime?q=${encodeURIComponent(cleanTitle(q))}&limit=${limit}&sfw`);
+    const d = await r.json();
+    return (d?.data || []).map((i) => ({
+      title: i.title_english || i.title,
+      cover: i.images?.jpg?.large_image_url || i.images?.jpg?.image_url || null,
+      year: i.year || null,
+      type: i.type || null,
+      score: i.score || null,
+      external: true
+    }));
+  } catch { return []; }
+}
+
+async function jikanLookup(q) {
+  const list = await jikanSearch(q, 1);
+  if (!list.length) return null;
+  try {
+    const r = await fetch(`https://api.jikan.moe/v4/anime?q=${encodeURIComponent(cleanTitle(q))}&limit=1&sfw`);
+    const d = await r.json();
+    const hit = d?.data?.[0];
+    if (!hit) return { ...list[0], synopsis: '', genres: [], malId: null };
+    return {
+      title: hit.title_english || hit.title,
+      cover: hit.images?.jpg?.large_image_url || hit.images?.jpg?.image_url || null,
+      year: hit.year || null,
+      type: hit.type || null,
+      score: hit.score || null,
+      synopsis: hit.synopsis || '',
+      genres: (hit.genres || []).map((g) => g.name),
+      malId: hit.mal_id || null,
+      external: true
+    };
+  } catch { return { ...list[0], synopsis: '', genres: [], malId: null }; }
+}
 
 function unwrapOEmbed(data) {
   if (!data) return null;
@@ -153,6 +214,7 @@ const debounce = (fn, ms = 500) => {
   let t = null;
   return (...args) => { clearTimeout(t); t = setTimeout(() => fn(...args), ms); };
 };
+const normText = (s = '') => String(s).toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g, '').replace(/[^a-z0-9]+/g, ' ').trim();
 
 function normAnime(a) {
   const seasons = (Array.isArray(a?.seasons) ? a.seasons : []).map((s, i) => {
@@ -243,6 +305,19 @@ function card(a, ep, srcOverride) {
   return el;
 }
 
+/* card de resultado externo (Jikan) — ao clicar procura nas fontes */
+function extCard(m, onPick) {
+  const el = document.createElement('a');
+  el.className = 'card';
+  el.href = '#';
+  const titleEsc = esc(m.title || '');
+  el.innerHTML = `<span class="ep">Externo</span>
+    <img loading="lazy" src="${esc(m.cover || PLACEHOLDER)}" alt="${titleEsc}" onerror="this.onerror=null; this.src='${PLACEHOLDER}';">
+    <div class="cap"><b>${titleEsc}</b><small>${esc([m.type, m.year].filter(Boolean).join(' • ') || 'Jikan')}</small></div>`;
+  el.onclick = (e) => { e.preventDefault(); onPick(m); };
+  return el;
+}
+
 async function jsonWithTimeout(url, ms = 5000) {
   const controller = new AbortController();
   const id = setTimeout(() => controller.abort(), ms);
@@ -264,7 +339,12 @@ const json = (u) => jsonWithTimeout(u, 15000);
 
 /* FIX: detalhe e busca podem ser lentos (o servidor tem budget maior) */
 const jsonSlow = (u) => jsonWithTimeout(u, 30000);
-const jsonSearch = (u) => jsonWithTimeout(u, 20000);
+const jsonSearch = (u) => jsonWithTimeout(u, 30000);
+
+/* FIX: busca tolerante — nunca lança, sempre devolve algo (ou null) */
+async function jsonSoft(url, ms = 30000) {
+  try { return await jsonWithTimeout(url, ms); } catch { return null; }
+}
 
 /* FIX: requisição fresca — sem HTML/token/URL de vídeo em cache */
 async function jsonFresh(url, ms = 14000) {
@@ -527,8 +607,59 @@ if (document.body.dataset.page === 'home') {
   };
   $('#btn-bell').onclick = () => { show('home'); toast('Novos episódios na Home'); };
 
-  /* FIX: busca em uma única chamada agregada, com cache, debounce e Enter */
+  /* ===== busca: agregado -> por fonte -> catálogo -> Jikan (nunca erro seco) ===== */
   let searchSeq = 0;
+
+  const searchAcrossSources = async (q) => {
+    const sources = await fetchSources();
+    const settled = await Promise.allSettled(
+      sources.map(s => jsonSoft(`${API}/api/search?q=${encodeURIComponent(q)}&source=${s.id}&_t=${Date.now()}`))
+    );
+    const out = [];
+    settled.forEach((r, i) => {
+      if (r.status === 'fulfilled' && r.value) {
+        asList(r.value).forEach(item => out.push({ ...item, source: item.source || sources[i].id }));
+      }
+    });
+    return out;
+  };
+
+  const searchCatalog = async (q) => {
+    const nq = normText(q);
+    const out = [];
+    for (const p of [1, 2, 3]) {
+      const d = await jsonSoft(`${API}/api/catalog?page=${p}&source=${encodeURIComponent(currentSource)}`, 20000);
+      const items = asList(d);
+      if (!items.length) break;
+      items.forEach((i) => {
+        const n = normText(i.title || i.slug);
+        if (nq && (n.includes(nq) || nq.includes(n))) out.push({ ...i, source: currentSource });
+      });
+      if (out.length >= 12) break;
+    }
+    return out;
+  };
+
+  const openExternal = async (m) => {
+    toast('Procurando nas fontes…');
+    const hits = dropJujutsu(await searchAcrossSources(m.title));
+    const best = hits[0];
+    if (best?.slug) {
+      location.href = `detail.html?source=${encodeURIComponent(best.source || currentSource)}&slug=${encodeURIComponent(best.slug)}`;
+      return;
+    }
+    const local = dropJujutsu(await searchCatalog(m.title));
+    if (local[0]?.slug) {
+      location.href = `detail.html?source=${encodeURIComponent(currentSource)}&slug=${encodeURIComponent(local[0].slug)}`;
+      return;
+    }
+    toast('Não disponível nas fontes');
+  };
+
+  const renderResults = (box, list) => {
+    box.innerHTML = '';
+    list.forEach(a => box.appendChild(a.external ? extCard(a, openExternal) : card(a, null, a.source || currentSource)));
+  };
 
   const runSearch = async (raw) => {
     const q = String(raw || '').trim();
@@ -541,43 +672,48 @@ if (document.body.dataset.page === 'home') {
     const box = $('#results');
     const cacheKey = 'cache_search_' + q.toLowerCase();
     const cached = store.get(cacheKey);
-    if (cached && cached.length) {
-      box.innerHTML = '';
-      cached.forEach(a => box.appendChild(card(a, null, a.source || currentSource)));
-    } else {
-      box.innerHTML = '<p class="empty">Buscando em todas as fontes…</p>';
+    if (cached && cached.length) renderResults(box, cached);
+    else box.innerHTML = '<p class="empty">Buscando em todas as fontes…</p>';
+
+    const step = (msg) => { if (seq === searchSeq) box.innerHTML = `<p class="empty">${esc(msg)}</p>`; };
+
+    let list = [];
+
+    /* 1) endpoint agregado (tolerante a falha) */
+    const agg = await jsonSoft(`${API}/api/search?q=${encodeURIComponent(q)}&_t=${Date.now()}`);
+    if (seq !== searchSeq) return;
+    list = dropJujutsu(asList(agg));
+
+    /* 2) fonte por fonte */
+    if (!list.length) {
+      step('Ainda buscando… tentando cada servidor.');
+      list = dropJujutsu(await searchAcrossSources(q));
+      if (seq !== searchSeq) return;
     }
 
-    try {
-      const res = await jsonSearch(`${API}/api/search?q=${encodeURIComponent(q)}&_t=${Date.now()}`);
+    /* 3) varredura do catálogo local */
+    if (!list.length) {
+      step('Ainda buscando… varrendo o catálogo.');
+      list = dropJujutsu(await searchCatalog(q));
       if (seq !== searchSeq) return;
-      let list = dropJujutsu(asList(res));
-
-      /* FIX: se o agregado voltar vazio, tenta fonte por fonte em paralelo */
-      if (!list.length) {
-        const sources = await fetchSources();
-        const settled = await Promise.allSettled(
-          sources.map(s => jsonSearch(`${API}/api/search?q=${encodeURIComponent(q)}&source=${s.id}&_t=${Date.now()}`))
-        );
-        if (seq !== searchSeq) return;
-        settled.forEach((r, i) => {
-          if (r.status === 'fulfilled') {
-            asList(r.value).forEach(item => list.push({ ...item, source: item.source || sources[i].id }));
-          }
-        });
-        list = dropJujutsu([...new Map(list.map(i => [i.slug || i.title, i])).values()]);
-      }
-
-      box.innerHTML = '';
-      if (!list.length) {
-        return failBox(box, `Nada encontrado para "${q}" em nenhuma fonte.`, () => runSearch(q));
-      }
-      store.set(cacheKey, list.slice(0, 60));
-      list.forEach(a => box.appendChild(card(a, null, a.source || currentSource)));
-    } catch {
-      if (seq !== searchSeq) return;
-      if (!cached || !cached.length) failBox(box, 'Erro na busca.', () => runSearch(q));
     }
+
+    list = [...new Map(list.map(i => [i.slug || i.title, i])).values()];
+
+    /* 4) Jikan como último recurso — resultados externos clicáveis */
+    if (!list.length) {
+      step('Nada nas fontes. Buscando no catálogo externo…');
+      const ext = await jikanSearch(q, 12);
+      if (seq !== searchSeq) return;
+      if (!ext.length) {
+        return failBox(box, `Nada encontrado para "${q}".`, () => runSearch(q));
+      }
+      renderResults(box, ext);
+      return;
+    }
+
+    store.set(cacheKey, list.slice(0, 60));
+    renderResults(box, list);
   };
 
   $('#searchbar').addEventListener('submit', (e) => {
@@ -823,10 +959,22 @@ if (document.body.dataset.page === 'home') {
 
 /* ================= DETALHE ================= */
 if (document.body.dataset.page === 'detail') {
-  const params = new URLSearchParams(location.search);
+  /* FIX: aceita detail.html?... , megaanime://detail?... e share.html?... */
+  const normalizeParams = () => {
+    const fromSearch = new URLSearchParams(location.search);
+    if (fromSearch.get('slug')) return fromSearch;
+    const fromHash = new URLSearchParams(String(location.hash || '').replace(/^#\??/, ''));
+    if (fromHash.get('slug')) return fromHash;
+    const raw = String(location.href || '');
+    const qs = raw.includes('?') ? raw.slice(raw.indexOf('?') + 1) : '';
+    return new URLSearchParams(qs.replace(/#.*$/, ''));
+  };
+
+  const params = normalizeParams();
   let source = params.get('source') || store.get('source', 'animesonline');
   let slug = params.get('slug');
-  let data = null, season = 1, audio = store.get('audio', 'leg'), sourcesList = DEFAULT_SOURCES;
+  let data = null, season = +(params.get('season') || 1), audio = params.get('audio') || store.get('audio', 'leg');
+  let sourcesList = DEFAULT_SOURCES;
   const initialSlug = slug;
 
   $('#back').onclick = () => history.length > 1 ? history.back() : location.href = 'index.html';
@@ -879,7 +1027,7 @@ if (document.body.dataset.page === 'detail') {
         <span class="red">HD</span>
         <span>${data.episodeCount} eps</span>`;
 
-      season = data.seasons[0]?.season || 1;
+      if (data.seasons.length) season = data.seasons[0]?.season || 1;
       paintEps();
       $('#fav').classList.toggle('on', isFav(data.slug));
 
@@ -892,6 +1040,114 @@ if (document.body.dataset.page === 'detail') {
       $('#badges').innerHTML = '<span class="red">erro</span>';
     }
   }
+
+  /* FIX: quando o scrape falha de vez, a página é preenchida com o catálogo externo */
+  function renderExternal(ext) {
+    data = null;
+    document.title = ext.title || initialSlug;
+    $('#title').textContent = ext.title || initialSlug;
+    $('#syn').textContent = ext.synopsis || 'Sinopse indisponível no catálogo externo.';
+    $('#genres').innerHTML = `<b>Gênero:</b> ${esc((ext.genres || []).join(', ') || '—')}`;
+    $('#badges').innerHTML = `
+      <span class="red">catálogo externo</span>
+      ${ext.year ? `<span>${esc(ext.year)}</span>` : ''}
+      ${ext.type ? `<span>${esc(ext.type)}</span>` : ''}
+      ${ext.score ? `<span class="star">${ICONS.star} ${Number(ext.score).toFixed(1)}</span>` : ''}`;
+
+    if (ext.cover) {
+      $('#poster').src = esc(ext.cover);
+      $('#blur').innerHTML = `<img src="${esc(ext.cover)}" alt="">`;
+    } else {
+      $('#poster').src = PLACEHOLDER;
+    }
+
+    $('#tab-eps').innerHTML = '<p class="empty">Episódios indisponíveis neste servidor. Tente outra fonte abaixo.</p>';
+    $('#tab-rel').innerHTML = '<div class="grid"></div>';
+
+    const box = $('#tab-eps');
+    const retry = document.createElement('button');
+    retry.className = 'btn dark';
+    retry.style.margin = '0 0 20px';
+    retry.textContent = 'Procurar em outras fontes';
+    retry.onclick = async () => {
+      retry.textContent = 'Procurando…';
+      const hits = await scrapeByTitle([source, ...sourcesList.map(s => s.id).filter(id => id !== source)], ext.title);
+      if (!hits.length) { retry.textContent = 'Procurar em outras fontes'; toast('Nada encontrado nas fontes'); return; }
+      applyHit(hits[0]);
+    };
+    box.appendChild(retry);
+
+    if (ext.malId) loadCharsFor(ext.malId, ext.title);
+    else $('#tab-chars').innerHTML = '<p class="empty">Personagens indisponíveis.</p>';
+  }
+
+  async function scrapeAll(order, sl) {
+    const settled = await Promise.allSettled(
+      order.map(src => jsonSlow(`${API}/api/anime/${encodeURIComponent(sl)}?source=${encodeURIComponent(src)}&_t=${Date.now()}`)
+        .then(res => ({ src, res })))
+    );
+    return settled
+      .filter(x => x.status === 'fulfilled' && x.value?.res && !x.value.res.error &&
+        (((x.value.res.seasons || []).length) || x.value.res.title))
+      .map(x => x.value);
+  }
+
+  async function scrapeByTitle(order, title) {
+    const hits = [];
+    for (const src of order) {
+      const found = asList(await jsonSoft(`${API}/api/search?q=${encodeURIComponent(title)}&source=${encodeURIComponent(src)}`, 20000));
+      const n = normText(title);
+      const match = found.find((i) => {
+        const it = normText(i.title || i.slug);
+        return it === n || it.includes(n) || n.includes(it);
+      }) || found[0];
+      if (!match?.slug) continue;
+      const res = await jsonSoft(`${API}/api/anime/${encodeURIComponent(match.slug)}?source=${encodeURIComponent(src)}`, 25000);
+      if (res && !res.error && ((res.seasons || []).length || res.title)) hits.push({ src, res });
+      if (hits.length) break;
+    }
+    return hits;
+  }
+
+  function applyHit(hit) {
+    source = hit.src;
+    store.set('source', source);
+    slug = hit.res.slug || slug;
+    store.set('cache_detail_' + source + ':' + slug, hit.res);
+    store.set('cache_detail_' + source + ':' + (initialSlug || slug), hit.res);
+    history.replaceState(null, '', `detail.html?source=${encodeURIComponent(source)}&slug=${encodeURIComponent(slug)}`);
+    renderDetail(hit.res);
+  }
+
+  async function loadDetail() {
+    sourcesList = await fetchSources();
+    const order = [source, ...sourcesList.map(s => s.id).filter(id => id !== source)];
+
+    /* FIX: mostra o scrape já salvo na hora, sem esperar rede */
+    const cacheKey = 'cache_detail_' + source + ':' + initialSlug;
+    const cached = store.get(cacheKey);
+    if (cached) renderDetail(cached);
+
+    /* 1) scrape em paralelo, 30s */
+    let hits = await scrapeAll(order, initialSlug);
+    if (hits.length) { applyHit(order.map(id => hits.find(h => h.src === id)).find(Boolean) || hits[0]); return; }
+
+    /* 2) usa o título canônico do Jikan para procurar de novo nas fontes */
+    const guess = String(initialSlug || '').replace(/[-_]+/g, ' ');
+    const ext = await jikanLookup(guess);
+
+    if (ext?.title) {
+      const retryHits = await scrapeByTitle(order, ext.title);
+      if (retryHits.length) { applyHit(retryHits[0]); return; }
+    }
+
+    /* 3) sem scrape: preenche com o catálogo externo em vez de "não encontrado" */
+    if (ext) { renderExternal(ext); return; }
+    if (cached) { toast('Mostrando dados salvos'); return; }
+    detailError();
+  }
+
+  loadDetail();
 
   async function loadSimilar() {
     try {
@@ -911,19 +1167,26 @@ if (document.body.dataset.page === 'detail') {
       if (!finalSimilar.length) g.innerHTML = '<p class="empty">Sem semelhantes.</p>';
       else finalSimilar.forEach(a => g.appendChild(card(a, null, a.source || source)));
     } catch {
-      $('#tab-rel .grid').innerHTML = '<p class="empty">Sem semelhantes.</p>';
+      const g = $('#tab-rel .grid');
+      if (g) g.innerHTML = '<p class="empty">Sem semelhantes.</p>';
     }
   }
 
   async function loadChars() {
+    const title = data?.title || String(slug || '').replace(/-/g, ' ');
     try {
-      const jikanSearch = await fetch(`https://api.jikan.moe/v4/anime?q=${encodeURIComponent(data?.title || slug)}&limit=1`).then(r => r.json());
-      const animeMalId = jikanSearch?.data?.[0]?.mal_id;
-      if (!animeMalId) {
-        $('#tab-chars').innerHTML = '<p class="empty">Personagens indisponíveis.</p>';
-        return;
-      }
-      const charRes = await fetch(`https://api.jikan.moe/v4/anime/${animeMalId}/characters`).then(r => r.json());
+      const r = await fetch(`https://api.jikan.moe/v4/anime?q=${encodeURIComponent(cleanTitle(title))}&limit=1`).then(res => res.json());
+      const malId = r?.data?.[0]?.mal_id;
+      if (!malId) { $('#tab-chars').innerHTML = '<p class="empty">Personagens indisponíveis.</p>'; return; }
+      loadCharsFor(malId);
+    } catch {
+      $('#tab-chars').innerHTML = '<p class="empty">Personagens indisponíveis.</p>';
+    }
+  }
+
+  async function loadCharsFor(malId) {
+    try {
+      const charRes = await fetch(`https://api.jikan.moe/v4/anime/${malId}/characters`).then(res => res.json());
       const charsList = charRes?.data || [];
       $('#tab-chars').innerHTML = '';
       if (!charsList.length) {
@@ -946,46 +1209,6 @@ if (document.body.dataset.page === 'detail') {
       $('#tab-chars').innerHTML = '<p class="empty">Personagens indisponíveis.</p>';
     }
   }
-
-  async function loadDetail() {
-    sourcesList = await fetchSources();
-    const order = [source, ...sourcesList.map(s => s.id).filter(id => id !== source)];
-
-    /* FIX: mostra o scrape já salvo na hora, sem esperar rede */
-    const cacheKey = 'cache_detail_' + source + ':' + initialSlug;
-    const cached = store.get(cacheKey);
-    if (cached) renderDetail(cached, { similarDone: false });
-
-    /* FIX: todas as fontes em paralelo e com 30s — antes era sequencial com 15s e estourava */
-    const settled = await Promise.allSettled(
-      order.map(src => jsonSlow(`${API}/api/anime/${encodeURIComponent(initialSlug)}?source=${encodeURIComponent(src)}&_t=${Date.now()}`)
-        .then(res => ({ src, res })))
-    );
-
-    const hits = settled
-      .filter(x => x.status === 'fulfilled' && x.value?.res && !x.value.res.error &&
-        (((x.value.res.seasons || []).length) || x.value.res.title))
-      .map(x => x.value);
-
-    if (!hits.length) {
-      if (cached) { toast('Mostrando dados salvos'); return; }
-      detailError();
-      return;
-    }
-
-    const chosen = order.map(id => hits.find(h => h.src === id)).find(Boolean) || hits[0];
-    source = chosen.src;
-    store.set('source', source);
-    slug = chosen.res.slug || slug;
-    store.set('cache_detail_' + source + ':' + slug, chosen.res);
-
-    /* remonta o cache com o slug final para o próximo acesso */
-    if (slug !== initialSlug) store.set('cache_detail_' + source + ':' + initialSlug, chosen.res);
-
-    renderDetail(chosen.res);
-  }
-
-  loadDetail();
 
   function paintEps() {
     const box = $('#tab-eps');
@@ -1042,14 +1265,14 @@ if (document.body.dataset.page === 'detail') {
 
   $('#play').onclick = () => {
     const ep = currentEp();
-    if (!ep) return toast('Sem episódios');
+    if (!ep) return toast(data ? 'Sem episódios' : 'Episódios indisponíveis neste servidor');
     const n = ep.number || 1;
     location.href = `player.html?source=${encodeURIComponent(source)}&slug=${encodeURIComponent(data.slug)}&ep=${n}&season=${season}&audio=${ep.audio}`;
   };
 
   $('#dls').onclick = async () => {
     const ep = currentEp();
-    if (!ep) return toast('Sem episódios');
+    if (!ep) return toast(data ? 'Sem episódios' : 'Episódios indisponíveis neste servidor');
     toast('Preparando download…');
     try {
       const n = ep.number || 1;
@@ -1065,18 +1288,18 @@ if (document.body.dataset.page === 'detail') {
   };
 
   $('#fav').onclick = () => {
-    if (!data) return;
-    const on = toggleFav(data);
+    const item = data || { slug, source, title: $('#title')?.textContent || slug, cover: $('#poster')?.src };
+    const on = toggleFav(item);
     $('#fav').classList.toggle('on', on);
     toast(on ? 'Salvo na lista' : 'Removido');
   };
 
   $('#like').onclick = () => { $('#like').classList.toggle('on'); toast('Curtido'); };
 
-  $('#share').onclick = async () => {
-    const url = location.href;
-    try { await navigator.share({ title: data?.title || slug, url }); }
-    catch { try { await navigator.clipboard.writeText(url); toast('Link copiado'); } catch { toast(url); } }
+  /* FIX: compartilha link público HTTPS (abre no site e tenta abrir o app) */
+  $('#share').onclick = () => {
+    const url = shareUrl({ source, slug: data?.slug || slug, season: data ? season : '', audio });
+    copyShare(url, data?.title || $('#title')?.textContent || slug);
   };
 
   $('#more').onclick = () => {

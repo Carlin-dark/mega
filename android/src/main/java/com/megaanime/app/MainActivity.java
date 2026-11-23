@@ -1,97 +1,80 @@
 package com.megaanime.app;
 
 import android.annotation.SuppressLint;
-import android.content.pm.ActivityInfo;
-import android.content.pm.PackageManager;
+import android.app.Activity;
+import android.content.Intent;
+import android.net.Uri;
+import android.os.Build;
 import android.os.Bundle;
 import android.view.View;
-import android.view.ViewGroup;
 import android.view.WindowManager;
 import android.webkit.WebChromeClient;
+import android.webkit.WebResourceRequest;
 import android.webkit.WebSettings;
 import android.webkit.WebView;
 import android.webkit.WebViewClient;
 import android.widget.FrameLayout;
-import android.widget.Toast;
-import androidx.appcompat.app.AppCompatActivity;
 
-public class MainActivity extends AppCompatActivity {
+public class MainActivity extends Activity {
 
-    /* FIX: UA de Chrome Android compatível com googlevideo.com e blogger.com */
-    private static final String UA =
-            "Mozilla/5.0 (Linux; Android 13; Pixel 7) AppleWebKit/537.36 (KHTML, like Gecko) " +
-            "Chrome/124.0.0.0 Mobile Safari/537.36";
+    private static final String ASSET_BASE = "file:///android_asset/web/";
+    private static final String API_HOST = "mega-la8q.onrender.com";
+    private static final String SITE_HOST = "carlin-dark.github.io";
 
     private WebView web;
     private FrameLayout root;
     private View customView;
     private WebChromeClient.CustomViewCallback customCallback;
-    private DownloadBridge bridge;
 
     @SuppressLint("SetJavaScriptEnabled")
     @Override
-    protected void onCreate(Bundle b) {
-        super.onCreate(b);
+    protected void onCreate(Bundle saved) {
+        super.onCreate(saved);
 
         root = new FrameLayout(this);
         web = new WebView(this);
-        root.addView(web, new FrameLayout.LayoutParams(
-                ViewGroup.LayoutParams.MATCH_PARENT,
-                ViewGroup.LayoutParams.MATCH_PARENT));
+        root.addView(web, new FrameLayout.LayoutParams(-1, -1));
         setContentView(root);
 
         WebSettings s = web.getSettings();
         s.setJavaScriptEnabled(true);
         s.setDomStorageEnabled(true);
         s.setDatabaseEnabled(true);
-        s.setMediaPlaybackRequiresUserGesture(false);
-        s.setLoadWithOverviewMode(true);
-        s.setUseWideViewPort(true);
-        s.setCacheMode(WebSettings.LOAD_DEFAULT);
-        s.setMixedContentMode(WebSettings.MIXED_CONTENT_ALWAYS_ALLOW);
         s.setAllowFileAccess(true);
         s.setAllowContentAccess(true);
-        s.setJavaScriptCanOpenWindowsAutomatically(true);
-        s.setSupportMultipleWindows(false);
-        /* FIX: UA fixo e sem zoom acidental */
-        s.setUserAgentString(UA);
-        s.setSupportZoom(false);
-        s.setBuiltInZoomControls(false);
+        s.setLoadWithOverviewMode(true);
+        s.setUseWideViewPort(true);
+        s.setMediaPlaybackRequiresUserGesture(false);
+        s.setCacheMode(WebSettings.LOAD_DEFAULT);
+        if (Build.VERSION.SDK_INT >= 21) {
+            s.setMixedContentMode(WebSettings.MIXED_CONTENT_ALWAYS_ALLOW);
+        }
+        web.setBackgroundColor(0xFF0B0B10);
+
+        /* mantém a assinatura do DownloadBridge.java do projeto */
+        web.addJavascriptInterface(new DownloadBridge(this, web), "Android");
 
         web.setWebViewClient(new WebViewClient() {
             @Override
-            public boolean shouldOverrideUrlLoading(WebView view, String url) {
-                if (url != null && url.startsWith("file://")) return false;
-                return false;
+            public boolean shouldOverrideUrlLoading(WebView v, String url) {
+                return route(url);
+            }
+
+            @Override
+            public boolean shouldOverrideUrlLoading(WebView v, WebResourceRequest req) {
+                return route(req.getUrl().toString());
             }
         });
 
-        // ponte de download: window.Android.download(url, nome, mime, referer)
-        bridge = new DownloadBridge(this);
-        web.addJavascriptInterface(bridge, "Android");
-
-        // pede o armazenamento na abertura
-        bridge.ensurePermission();
-
-        // fallback para links diretos de vídeo
-        web.setDownloadListener((url, ua, cd, mime, len) ->
-                bridge.download(url, "mega-anime.mp4", mime, "https://www.blogger.com/"));
-
         web.setWebChromeClient(new WebChromeClient() {
-
             @Override
-            public void onShowCustomView(View view, CustomViewCallback callback) {
-                if (customView != null) { callback.onCustomViewHidden(); return; }
+            public void onShowCustomView(View view, CustomViewCallback cb) {
+                if (customView != null) { cb.onCustomViewHidden(); return; }
                 customView = view;
-                customCallback = callback;
-                root.addView(view, new FrameLayout.LayoutParams(
-                        ViewGroup.LayoutParams.MATCH_PARENT,
-                        ViewGroup.LayoutParams.MATCH_PARENT));
+                customCallback = cb;
+                root.addView(view, new FrameLayout.LayoutParams(-1, -1));
                 web.setVisibility(View.GONE);
                 getWindow().addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON);
-                /* FIX: libera a rotação para o fullscreen poder girar */
-                setRequestedOrientation(ActivityInfo.SCREEN_ORIENTATION_UNSPECIFIED);
-                setImmersive(true);
             }
 
             @Override
@@ -101,75 +84,108 @@ public class MainActivity extends AppCompatActivity {
                 customView = null;
                 web.setVisibility(View.VISIBLE);
                 getWindow().clearFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON);
-                /* FIX: volta ao retrato ao sair do fullscreen */
-                setRequestedOrientation(ActivityInfo.SCREEN_ORIENTATION_PORTRAIT);
-                setImmersive(false);
-                if (customCallback != null) { customCallback.onCustomViewHidden(); customCallback = null; }
+                if (customCallback != null) customCallback.onCustomViewHidden();
+                customCallback = null;
             }
         });
 
-        web.loadUrl("file:///android_asset/web/index.html");
-    }
-
-    /* FIX: tela cheia pedida pelo player via window.Android.fullscreen() */
-    public void enterImmersive() {
-        getWindow().addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON);
-        setRequestedOrientation(ActivityInfo.SCREEN_ORIENTATION_UNSPECIFIED);
-        setImmersive(true);
+        String target = fromIntent(getIntent());
+        web.loadUrl(target != null ? target : ASSET_BASE + "index.html");
     }
 
     @Override
-    public void onRequestPermissionsResult(int code, String[] perms, int[] results) {
-        super.onRequestPermissionsResult(code, perms, results);
-        if (code == 1001) {
-            if (results.length > 0 && results[0] == PackageManager.PERMISSION_GRANTED) {
-                Toast.makeText(this, "Armazenamento liberado", Toast.LENGTH_SHORT).show();
-            } else {
-                Toast.makeText(this, "Sem permissao o download nao funciona", Toast.LENGTH_LONG).show();
+    protected void onNewIntent(Intent intent) {
+        super.onNewIntent(intent);
+        setIntent(intent);
+        String target = fromIntent(intent);
+        if (target != null) web.loadUrl(target);
+    }
+
+    /** Converte intent/link externo em página local com os parâmetros preservados. */
+    private String fromIntent(Intent intent) {
+        if (intent == null) return null;
+        Uri d = intent.getData();
+        if (d == null) return null;
+
+        String scheme = d.getScheme() == null ? "" : d.getScheme().toLowerCase();
+        String host = d.getHost() == null ? "" : d.getHost().toLowerCase();
+
+        boolean isScheme = "megaanime".equals(scheme);
+        boolean isSiteShare = ("https".equals(scheme) || "http".equals(scheme))
+                && SITE_HOST.equals(host)
+                && d.getPath() != null
+                && d.getPath().endsWith("/share.html");
+
+        if (!isScheme && !isSiteShare) return null;
+
+        String page = ("player".equals(host) || d.getQueryParameter("ep") != null) ? "player.html" : "detail.html";
+        String slug = d.getQueryParameter("slug");
+
+        if (slug == null || slug.trim().isEmpty()) return ASSET_BASE + "index.html";
+
+        StringBuilder q = new StringBuilder();
+        appendParam(q, "source", d.getQueryParameter("source"));
+        appendParam(q, "slug", slug);
+        appendParam(q, "season", d.getQueryParameter("season"));
+        appendParam(q, "ep", d.getQueryParameter("ep"));
+        appendParam(q, "audio", d.getQueryParameter("audio"));
+
+        return ASSET_BASE + page + "?" + q;
+    }
+
+    private void appendParam(StringBuilder sb, String key, String value) {
+        if (value == null || value.isEmpty()) return;
+        if (sb.length() > 0) sb.append('&');
+        sb.append(key).append('=').append(Uri.encode(value));
+    }
+
+    /** true = tratado aqui; false = o WebView carrega. */
+    private boolean route(String url) {
+        if (url == null) return false;
+
+        if (url.startsWith("file://")) return false;
+
+        if (url.startsWith("megaanime://")) {
+            Uri u = Uri.parse(url);
+            String target = fromIntent(new Intent(Intent.ACTION_VIEW, u));
+            if (target != null) { web.loadUrl(target); return true; }
+            return false;
+        }
+
+        if (url.contains("/share.html")) {
+            Uri u = Uri.parse(url);
+            String target = fromIntent(new Intent(Intent.ACTION_VIEW, u));
+            if (target != null) { web.loadUrl(target); return true; }
+        }
+
+        if (url.startsWith("http")) {
+            Uri u = Uri.parse(url);
+            String host = u.getHost() == null ? "" : u.getHost().toLowerCase();
+            if (API_HOST.equals(host) || SITE_HOST.equals(host) || url.contains("/api/")) {
+                return false;
+            }
+            try {
+                startActivity(new Intent(Intent.ACTION_VIEW, u));
+                return true;
+            } catch (Exception e) {
+                return false;
             }
         }
-    }
 
-    @SuppressWarnings("deprecation")
-    public void setImmersive(boolean on) {
-        View d = getWindow().getDecorView();
-        if (on) {
-            d.setSystemUiVisibility(
-                    View.SYSTEM_UI_FLAG_LAYOUT_STABLE
-                            | View.SYSTEM_UI_FLAG_LAYOUT_HIDE_NAVIGATION
-                            | View.SYSTEM_UI_FLAG_LAYOUT_FULLSCREEN
-                            | View.SYSTEM_UI_FLAG_HIDE_NAVIGATION
-                            | View.SYSTEM_UI_FLAG_FULLSCREEN
-                            | View.SYSTEM_UI_FLAG_IMMERSIVE_STICKY);
-        } else {
-            d.setSystemUiVisibility(View.SYSTEM_UI_FLAG_LAYOUT_STABLE);
-        }
+        return false;
     }
 
     @Override
-    @SuppressWarnings("deprecation")
     public void onBackPressed() {
-        if (customView != null) { web.getWebChromeClient().onHideCustomView(); return; }
-        if (web.canGoBack()) web.goBack();
-        else super.onBackPressed();
-    }
-
-    /* FIX: pausa/retoma o WebView para não continuar tocando em background */
-    @Override
-    protected void onPause() {
-        if (web != null) web.onPause();
-        super.onPause();
-    }
-
-    @Override
-    protected void onResume() {
-        super.onResume();
-        if (web != null) web.onResume();
-    }
-
-    @Override
-    protected void onDestroy() {
-        if (web != null) { web.loadUrl("about:blank"); web.destroy(); }
-        super.onDestroy();
+        if (customView != null) {
+            web.getSettings();
+            if (customCallback != null) customCallback.onCustomViewHidden();
+            return;
+        }
+        if (web != null && web.canGoBack()) {
+            web.goBack();
+            return;
+        }
+        super.onBackPressed();
     }
 }
