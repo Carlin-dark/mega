@@ -1,4 +1,4 @@
-/* Mega Anime — Refactored & Polished with Jikan Fallback, Servidores 1-5, Multi-Source Search & Advanced Player */
+/* Mega Anime — Refactored & Optimized with Jikan Fallback, Servidores 1-5, Fast Home, Calendar 2030 & Preferences */
 const API = (window.API_BASE || 'https://mega-la8q.onrender.com').replace(/\/+$/, '');
 const $ = (s, r = document) => r.querySelector(s);
 const $$ = (s, r = document) => [...r.querySelectorAll(s)];
@@ -201,8 +201,9 @@ function card(a, ep, srcOverride) {
   const c = cover(a);
   const titleEsc = esc(a.title || '');
   const subtitle = esc([a.type, a.year].filter(Boolean).join(' • '));
+  const coverUrl = c ? (c.startsWith('http') ? esc(c) : img(c)) : '';
   el.innerHTML = `${ep ? `<span class="ep">EP ${esc(ep)}</span>` : ''}
-    <img loading="lazy" src="${c ? img(c) : ''}" alt="${titleEsc}" onerror="this.onerror=null; getPosterFallback('${titleEsc}').then(u=>{if(u) this.src=u;});">
+    <img loading="lazy" src="${coverUrl}" alt="${titleEsc}" onerror="this.onerror=null; getPosterFallback('${titleEsc}').then(u=>{if(u) this.src=u;});">
     <div class="pl"><span>${ICONS.play}</span></div>
     <div class="cap"><b>${titleEsc}</b><small>${subtitle}</small></div>`;
   if (!c) {
@@ -216,19 +217,28 @@ function card(a, ep, srcOverride) {
   return el;
 }
 
-async function json(url) {
-  const r = await fetch(url, { headers: { accept: 'application/json' } });
-  const text = await r.text();
-  let data = null;
-  try { data = text ? JSON.parse(text) : null; } catch {}
-  if (!r.ok && data === null) throw new Error(`HTTP ${r.status}`);
-  if (data && data.error && !Array.isArray(data)) throw new Error(data.error);
-  return data;
+async function jsonWithTimeout(url, ms = 6000) {
+  const controller = new AbortController();
+  const id = setTimeout(() => controller.abort(), ms);
+  try {
+    const r = await fetch(url, { headers: { accept: 'application/json' }, signal: controller.signal });
+    clearTimeout(id);
+    const text = await r.text();
+    let data = null;
+    try { data = text ? JSON.parse(text) : null; } catch {}
+    if (!r.ok && data === null) throw new Error(`HTTP ${r.status}`);
+    if (data && data.error && !Array.isArray(data)) throw new Error(data.error);
+    return data;
+  } catch (e) {
+    clearTimeout(id);
+    throw e;
+  }
 }
+const json = (u) => jsonWithTimeout(u, 7000);
 
 async function fetchSources() {
   try {
-    const r = await json(`${API}/api/sources`);
+    const r = await jsonWithTimeout(`${API}/api/sources`, 4000);
     const d = r;
     if (Array.isArray(d?.sources) && d.sources.length) {
       return d.sources.map((s, i) => ({ id: s.id, name: `Servidor ${i + 1}` }));
@@ -256,16 +266,13 @@ if (document.body.dataset.page === 'home') {
   let currentSource = store.get('source', 'animesonline');
   let availableSources = DEFAULT_SOURCES;
 
-  const paintHero = async () => {
+  const paintHero = () => {
     const a = heroPool[hi % heroPool.length];
     if (!a) return;
     let c = cover(a);
     const titleEsc = esc(a.title || '');
-    if (!c) {
-      c = await getPosterFallback(a.title);
-      if (c) a.cover = c;
-    }
-    $('#hero').innerHTML = `${c ? `<img src="${img(c)}" alt="" onerror="this.onerror=null; getPosterFallback('${titleEsc}').then(u=>{if(u)this.src=u});">` : ''}
+    const coverUrl = c ? (c.startsWith('http') ? esc(c) : img(c)) : '';
+    $('#hero').innerHTML = `${coverUrl ? `<img src="${coverUrl}" alt="" onerror="this.onerror=null; getPosterFallback('${titleEsc}').then(u=>{if(u)this.src=u});">` : ''}
       <div class="inner">
         <div class="chips"><span class="chip red">Em destaque</span>
           ${a.type ? `<span class="chip">${esc(a.type)}</span>` : ''}
@@ -289,6 +296,11 @@ if (document.body.dataset.page === 'home') {
       paintHero();
       toast(on ? 'Salvo na lista' : 'Removido');
     };
+    if (!c) {
+      getPosterFallback(a.title).then(u => {
+        if (u) { a.cover = u; paintHero(); }
+      });
+    }
   };
 
   const heroGo = (dir) => { hi = (hi + dir + heroPool.length) % heroPool.length; paintHero(); startHero(); };
@@ -312,37 +324,82 @@ if (document.body.dataset.page === 'home') {
     el.addEventListener('pointerleave', startHero);
   }
 
+  /* Fast Cached & Parallel Home Loader */
   async function loadHome() {
-    availableSources = await fetchSources();
-    $('#latest').innerHTML = '<p class="empty">Carregando…</p>';
-    $('#top').innerHTML = '';
-    $('#added').innerHTML = '';
-    try {
-      const list = asList(await json(`${API}/api/home?source=${encodeURIComponent(currentSource)}`));
-      const uniq = [...new Map(list.map(a => [a.slug, a])).values()];
-      if (!uniq.length) throw new Error('vazio');
-
-      heroPool = uniq.slice(0, 8);
-      await paintHero();
+    // Check local Home Cache for immediate instant paint
+    const cachedHome = store.get('cache_home_' + currentSource);
+    if (cachedHome && cachedHome.length) {
+      heroPool = cachedHome.slice(0, 8);
+      paintHero();
       startHero();
-      if (!$('#hero').dataset.wired) { $('#hero').dataset.wired = '1'; heroSwipe(); }
-
       $('#latest').innerHTML = '';
-      uniq.slice(0, 20).forEach(a => $('#latest').appendChild(card(a, null, currentSource)));
-      uniq.slice(20, 32).forEach(a => $('#top').appendChild(card(a, null, currentSource)));
-      if (!$('#top').children.length) uniq.slice(0, 12).forEach(a => $('#top').appendChild(card(a, null, currentSource)));
+      cachedHome.slice(0, 20).forEach(a => $('#latest').appendChild(card(a, null, currentSource)));
+      cachedHome.slice(20, 32).forEach(a => $('#top').appendChild(card(a, null, currentSource)));
+      cachedHome.slice(0, 12).forEach(a => $('#added').appendChild(card(a, null, currentSource)));
+    } else {
+      $('#latest').innerHTML = '<p class="empty">Carregando episódios…</p>';
+    }
 
-      const cat = asList(await json(`${API}/api/catalog?page=1&source=${encodeURIComponent(currentSource)}`));
-      (cat.length ? cat : uniq).forEach(a => $('#added').appendChild(card(a, null, currentSource)));
+    const cont = store.get('continue', []);
+    if (cont.length) {
+      $('#continue-wrap').classList.remove('hide');
+      $('#continue').innerHTML = '';
+      cont.slice(0, 12).forEach(c => $('#continue').appendChild(card(c, c.ep, c.source || currentSource)));
+    }
 
-      const cont = store.get('continue', []);
-      if (cont.length) {
-        $('#continue-wrap').classList.remove('hide');
-        $('#continue').innerHTML = '';
-        cont.slice(0, 12).forEach(c => $('#continue').appendChild(card(c, c.ep, c.source || currentSource)));
+    // Parallel fetch sources + home data
+    try {
+      const [sourcesRes, homeRes] = await Promise.allSettled([
+        fetchSources(),
+        jsonWithTimeout(`${API}/api/home?source=${encodeURIComponent(currentSource)}`, 6000)
+      ]);
+
+      if (sourcesRes.status === 'fulfilled' && sourcesRes.value) {
+        availableSources = sourcesRes.value;
+      }
+
+      let list = [];
+      if (homeRes.status === 'fulfilled' && homeRes.value) {
+        list = asList(homeRes.value);
+      }
+
+      // If current source failed or returned empty, try fallback source in background
+      if (!list.length) {
+        for (const s of availableSources) {
+          if (s.id === currentSource) continue;
+          try {
+            const fallbackRes = await jsonWithTimeout(`${API}/api/home?source=${encodeURIComponent(s.id)}`, 4000);
+            list = asList(fallbackRes);
+            if (list.length) {
+              currentSource = s.id;
+              store.set('source', currentSource);
+              break;
+            }
+          } catch {}
+        }
+      }
+
+      const uniq = [...new Map(list.map(a => [a.slug, a])).values()];
+      if (!uniq.length && !cachedHome) throw new Error('vazio');
+
+      if (uniq.length) {
+        store.set('cache_home_' + currentSource, uniq);
+        heroPool = uniq.slice(0, 8);
+        paintHero();
+        startHero();
+        if (!$('#hero').dataset.wired) { $('#hero').dataset.wired = '1'; heroSwipe(); }
+
+        $('#latest').innerHTML = '';
+        uniq.slice(0, 20).forEach(a => $('#latest').appendChild(card(a, null, currentSource)));
+        $('#top').innerHTML = '';
+        uniq.slice(20, 32).forEach(a => $('#top').appendChild(card(a, null, currentSource)));
+        if (!$('#top').children.length) uniq.slice(0, 12).forEach(a => $('#top').appendChild(card(a, null, currentSource)));
+
+        $('#added').innerHTML = '';
+        uniq.slice(0, 20).forEach(a => $('#added').appendChild(card(a, null, currentSource)));
       }
     } catch {
-      failBox($('#latest'), 'Falha ao carregar. Tentar de novo.', loadHome);
+      if (!cachedHome) failBox($('#latest'), 'Falha ao carregar. Tentar de novo.', loadHome);
     }
   }
   loadHome();
@@ -351,7 +408,7 @@ if (document.body.dataset.page === 'home') {
     if (busy || done) return;
     busy = true;
     try {
-      const list = asList(await json(`${API}/api/catalog?page=${++page}&source=${encodeURIComponent(currentSource)}`));
+      const list = asList(await jsonWithTimeout(`${API}/api/catalog?page=${++page}&source=${encodeURIComponent(currentSource)}`, 6000));
       if (!list.length) done = true;
       else list.forEach(a => $('#catalog').appendChild(card(a, null, currentSource)));
     } catch {}
@@ -363,6 +420,12 @@ if (document.body.dataset.page === 'home') {
   const show = (v) => {
     views.forEach(x => $('#view-' + x)?.classList.toggle('hide', x !== v));
     $$('.nav a').forEach(a => a.classList.toggle('on', a.dataset.tab === v));
+
+    // REQUIREMENT 5: Top Header restricted ONLY to Home view
+    const isHome = v === 'home';
+    $('.top')?.classList.toggle('hide', !isHome);
+    $('#searchbar')?.classList.add('hide');
+
     window.scrollTo(0, 0);
     if (v === 'list') renderList();
     if (v === 'downloads') renderDownloads();
@@ -378,7 +441,7 @@ if (document.body.dataset.page === 'home') {
   $('#btn-search').onclick = () => { $('#searchbar').classList.toggle('hide'); $('#q').focus(); };
   $('#btn-bell').onclick = () => { show('home'); toast('Novos episódios na Home'); };
 
-  /* UNIFIED PARALLEL MULTI-SOURCE SEARCH */
+  /* REQUIREMENT 2: UNIFIED PARALLEL MULTI-SOURCE SEARCH */
   $('#searchbar').onsubmit = async (e) => {
     e.preventDefault();
     const q = $('#q').value.trim();
@@ -388,7 +451,7 @@ if (document.body.dataset.page === 'home') {
     box.innerHTML = '<p class="empty">Buscando em todas as fontes em paralelo…</p>';
     try {
       const sources = await fetchSources();
-      const promises = sources.map(s => json(`${API}/api/search?q=${encodeURIComponent(q)}&source=${s.id}`).catch(() => null));
+      const promises = sources.map(s => jsonWithTimeout(`${API}/api/search?q=${encodeURIComponent(q)}&source=${s.id}`, 5000).catch(() => null));
       const settled = await Promise.allSettled(promises);
       let allResults = [];
       settled.forEach((res, idx) => {
@@ -435,13 +498,14 @@ if (document.body.dataset.page === 'home') {
     });
   }
 
+  /* REQUIREMENT 8: CALENDAR UP TO 2030 WITH JIKAN FALLBACK */
   let seasonsReady = false;
   function initSeasons() {
     const sel = $('#s-year');
     if (sel && !sel.options.length) {
-      const y = new Date().getFullYear();
-      for (let i = y + 1; i >= y - 6; i--) sel.add(new Option(i, i));
-      sel.value = y;
+      const curYear = new Date().getFullYear();
+      for (let i = 2030; i >= 2000; i--) sel.add(new Option(i, i));
+      sel.value = curYear;
       sel.onchange = () => loadSeason();
       $$('[data-s]').forEach(b => b.onclick = () => {
         $$('[data-s]').forEach(x => x.classList.toggle('on', x === b));
@@ -455,18 +519,45 @@ if (document.body.dataset.page === 'home') {
     const s = season || $('[data-s].on')?.dataset.s || 'winter';
     const y = $('#s-year')?.value || new Date().getFullYear();
     const box = $('#season-grid');
-    box.innerHTML = '<p class="empty">Carregando…</p>';
+    box.innerHTML = '<p class="empty">Carregando lançamentos da temporada…</p>';
     try {
-      let list = asList(await json(`${API}/api/seasons/${y}/${s}`));
-      if (!list.length) list = asList(await json(`${API}/api/calendar`));
+      let list = [];
+      try {
+        list = asList(await jsonWithTimeout(`${API}/api/seasons/${y}/${s}`, 5000));
+      } catch {}
+
+      // Fallback to Jikan Seasons API
+      if (!list || !list.length) {
+        try {
+          const jikan = await fetch(`https://api.jikan.moe/v4/seasons/${y}/${s}`).then(r => r.json());
+          if (Array.isArray(jikan?.data)) {
+            list = jikan.data.map(item => ({
+              title: item.title,
+              cover: item.images?.jpg?.large_image_url || item.images?.jpg?.image_url,
+              score: item.score,
+              type: item.type,
+              year: y
+            }));
+          }
+        } catch {}
+      }
+
+      if (!list || !list.length) {
+        try {
+          list = asList(await jsonWithTimeout(`${API}/api/calendar`, 5000));
+        } catch {}
+      }
+
       box.innerHTML = '';
-      if (!list.length) return failBox(box, 'Nada nesta temporada.', () => loadSeason(s));
+      if (!list || !list.length) return failBox(box, 'Nada encontrado nesta temporada.', () => loadSeason(s));
+
       list.forEach(m => {
         const titleEsc = esc(m.title || '');
         const el = document.createElement('a');
         el.className = 'card';
         el.href = '#';
-        el.innerHTML = `${m.cover ? `<img loading="lazy" src="${img(m.cover)}" alt="${titleEsc}" onerror="this.onerror=null; getPosterFallback('${titleEsc}').then(u=>{if(u)this.src=u});">` : '<div style="aspect-ratio:2/3;background:#1b1b22"></div>'}
+        const coverSrc = m.cover ? (m.cover.startsWith('http') ? esc(m.cover) : img(m.cover)) : '';
+        el.innerHTML = `${coverSrc ? `<img loading="lazy" src="${coverSrc}" alt="${titleEsc}" onerror="this.onerror=null; getPosterFallback('${titleEsc}').then(u=>{if(u)this.src=u});">` : '<div style="aspect-ratio:2/3;background:#1b1b22"></div>'}
           ${m.score ? `<span class="ep">${ICONS.star} ${Number(m.score).toFixed(1)}</span>` : ''}
           <div class="cap"><b>${titleEsc}</b><small>${esc(m.type || m.day || '')}</small></div>`;
         el.onclick = async (e) => {
@@ -486,15 +577,56 @@ if (document.body.dataset.page === 'home') {
     }
   }
 
+  /* REQUIREMENT 6 & 7: PROFILE PREFERENCES SAVING */
   function renderProfile() {
     $('#p-stats').textContent = `${favs().length} salvos · ${store.get('dls', []).length} downloads`;
-    $$('[data-audio]').forEach(b => b.classList.toggle('on', b.dataset.audio === store.get('audio', 'leg')));
-    $$('[data-srv]').forEach(b => b.classList.toggle('on', b.dataset.srv === store.get('srv', 'native')));
+
+    const prefAudio = store.get('audio', 'leg');
+    $$('[data-pref-audio]').forEach(b => b.classList.toggle('on', b.dataset.prefAudio === prefAudio));
+
+    const prefSrvIdx = store.get('srv_idx', '0');
+    $$('[data-pref-srv]').forEach(b => b.classList.toggle('on', b.dataset.prefSrv === String(prefSrvIdx)));
+
+    const prefQual = store.get('quality_pref', 'auto');
+    $$('[data-pref-qual]').forEach(b => b.classList.toggle('on', b.dataset.prefQual === prefQual));
+
+    const prefAutoNext = store.get('auto_next', 'on');
+    $$('[data-pref-autonext]').forEach(b => b.classList.toggle('on', b.dataset.prefAutonext === prefAutoNext));
   }
 
-  $$('[data-audio]').forEach(b => b.onclick = () => { store.set('audio', b.dataset.audio); renderProfile(); });
-  $$('[data-srv]').forEach(b => b.onclick = () => { store.set('srv', b.dataset.srv); renderProfile(); });
-  $('#wipe').onclick = () => { localStorage.clear(); toast('Dados limpos'); renderProfile(); };
+  $$('[data-pref-audio]').forEach(b => b.onclick = () => {
+    store.set('audio', b.dataset.prefAudio);
+    renderProfile();
+    toast('Áudio padrão salvo');
+  });
+
+  $$('[data-pref-srv]').forEach(b => b.onclick = () => {
+    const idx = +b.dataset.prefSrv;
+    store.set('srv_idx', idx);
+    if (DEFAULT_SOURCES[idx]) store.set('source', DEFAULT_SOURCES[idx].id);
+    renderProfile();
+    toast(`Servidor ${idx + 1} definido como padrão`);
+  });
+
+  $$('[data-pref-qual]').forEach(b => b.onclick = () => {
+    store.set('quality_pref', b.dataset.prefQual);
+    renderProfile();
+    toast('Qualidade preferida salva');
+  });
+
+  $$('[data-pref-autonext]').forEach(b => b.onclick = () => {
+    store.set('auto_next', b.dataset.prefAutonext);
+    renderProfile();
+    toast('Auto Próximo Episódio atualizado');
+  });
+
+  $('#wipe').onclick = () => {
+    if (confirm('Deseja realmente apagar todo o histórico, salvos e preferências localmente?')) {
+      localStorage.clear();
+      toast('Dados limpos');
+      renderProfile();
+    }
+  };
 }
 
 /* ================= DETALHE ================= */
@@ -567,7 +699,7 @@ if (document.body.dataset.page === 'detail') {
       document.title = data.title;
       $('#title').textContent = data.title;
 
-      let posterUrl = data.cover ? img(data.cover) : null;
+      let posterUrl = data.cover ? (data.cover.startsWith('http') ? data.cover : img(data.cover)) : null;
       if (!posterUrl) {
         const u = await getPosterFallback(data.title);
         if (u) posterUrl = u;
@@ -772,8 +904,10 @@ if (document.body.dataset.page === 'player') {
   let slug = p.get('slug');
   const season = +(p.get('season') || 1);
   let ep = +(p.get('ep') || 1);
-  let audio = p.get('audio') === 'dub' ? 'dub' : store.get('audio', 'leg');
+  let audio = p.get('audio') || store.get('audio', 'leg');
   let server = store.get('srv', 'native');
+  let qualityPref = store.get('quality_pref', 'auto');
+  let autoNextPref = store.get('auto_next', 'on');
   let info = null, plyr = null, tries = 0, sourcesList = DEFAULT_SOURCES;
 
   $('#back').onclick = () => history.length > 1 ? history.back() : location.href = 'index.html';
@@ -791,6 +925,7 @@ if (document.body.dataset.page === 'player') {
           $('#ptitle').textContent = `${info.title} — EP ${ep}`;
           document.title = $('#ptitle').textContent;
           buildStrip();
+          updateServerButtons();
           return;
         }
       } catch {}
@@ -850,6 +985,7 @@ if (document.body.dataset.page === 'player') {
         if (list.length || embedUrl) {
           source = src;
           store.set('source', source);
+          updateServerButtons();
           return { d, list, embedUrl };
         }
       } catch {}
@@ -886,11 +1022,17 @@ if (document.body.dataset.page === 'player') {
         return;
       }
 
-      const best = list[list.length - 1];
+      // Pick stream according to preferred quality if possible
+      let best = list[list.length - 1];
+      if (qualityPref !== 'auto') {
+        const match = list.find(s => String(s.quality || s.label || '').includes(qualityPref));
+        if (match) best = match;
+      }
+
       const rawBestSrc = best.proxyUrl ? `${API}${best.proxyUrl}` : best.url;
       const bestSrc = unwrapOEmbed(rawBestSrc) || rawBestSrc;
 
-      /* Immersive player layout with center controls, volume/brightness sliders, and EP badge */
+      /* REQUIREMENT 4: Immersive Player Layout & Auto Fullscreen Request */
       $('#stage').innerHTML = `<div class="adv-player-wrapper" style="position:relative;width:100%;height:100%;background:#000">
         <video id="v" playsinline crossorigin style="width:100%;height:100%;display:block"></video>
         <div class="adv-overlay" style="position:absolute;inset:0;pointer-events:none;display:flex;flex-direction:column;justify-content:space-between;padding:12px">
@@ -915,13 +1057,16 @@ if (document.body.dataset.page === 'player') {
 
       const video = $('#v');
       video.src = bestSrc;
-      if (info?.cover) video.poster = img(info.cover);
+      if (info?.cover) video.poster = info.cover.startsWith('http') ? info.cover : img(info.cover);
 
-      // Automatic Fullscreen Request
-      try {
-        if (video.requestFullscreen) video.requestFullscreen();
-        else if (video.webkitRequestFullscreen) video.webkitRequestFullscreen();
-      } catch {}
+      // REQUIREMENT 4: Automatic Fullscreen Request
+      const triggerFullscreen = () => {
+        try {
+          if (video.requestFullscreen) video.requestFullscreen().catch(() => {});
+          else if (video.webkitRequestFullscreen) video.webkitRequestFullscreen();
+        } catch {}
+      };
+      video.addEventListener('play', triggerFullscreen, { once: true });
 
       video.addEventListener('error', () => {
         if (tries++ < 2) { toast('Link expirou, resolvendo de novo'); load(); return; }
@@ -938,10 +1083,10 @@ if (document.body.dataset.page === 'player') {
           storage: { enabled: true, key: 'ma-plyr' }
         });
         video.addEventListener('timeupdate', saveProgress);
-        video.addEventListener('ended', next);
+        if (autoNextPref !== 'off') video.addEventListener('ended', next);
       } else {
         video.controls = true;
-        video.addEventListener('ended', next);
+        if (autoNextPref !== 'off') video.addEventListener('ended', next);
       }
 
       $('#btn-10s')?.addEventListener('click', () => { video.currentTime = Math.max(0, video.currentTime - 10); });
@@ -1032,44 +1177,35 @@ if (document.body.dataset.page === 'player') {
     b.onclick = () => {
       audio = b.dataset.audio;
       store.set('audio', audio);
-      $$('[data-audio]').forEach(x => x.classList.toggle('on', x.dataset.audio === audio));
-      $('#overlay').classList.remove('on');
+      $$('#ctrl [data-audio]').forEach(x => x.classList.toggle('on', x.dataset.audio === audio));
       buildStrip();
       load();
     };
   });
 
-  const srvLabel = () => {
-    const idx = sourcesList.findIndex(s => s.id === source);
-    return `Servidor: ${idx >= 0 ? idx + 1 : 1}`;
-  };
-  $('#srv').innerHTML = `${ICONS.layers}`;
-  $('#srv').title = srvLabel();
-  $('#srv').onclick = () => {
-    // Cycle through sources as Servidor 1, 2, 3, 4, 5
+  function updateServerButtons() {
     if (!sourcesList || !sourcesList.length) sourcesList = DEFAULT_SOURCES;
-    const curIdx = sourcesList.findIndex(s => s.id === source);
-    const nextIdx = (curIdx + 1) % sourcesList.length;
-    source = sourcesList[nextIdx].id;
-    store.set('source', source);
-    $('#srv').title = srvLabel();
-    toast(srvLabel());
-    plyr?.destroy();
-    load();
-  };
-
-  $$('[data-srv]').forEach(b => {
-    b.classList.toggle('on', b.dataset.srv === server);
-    b.onclick = () => {
-      server = b.dataset.srv;
-      store.set('srv', server);
-      $$('[data-srv]').forEach(x => x.classList.toggle('on', x === server));
-      $('#overlay').classList.remove('on');
-      plyr?.destroy();
-      load();
-    };
-  });
+    $$('#srv-options [data-source-idx]').forEach(b => {
+      const idx = +b.dataset.sourceIdx;
+      const sObj = sourcesList[idx] || DEFAULT_SOURCES[idx];
+      const isCurrent = sObj && sObj.id === source;
+      b.classList.toggle('on', isCurrent);
+      b.onclick = () => {
+        if (!sObj) return;
+        source = sObj.id;
+        store.set('source', source);
+        $('#overlay').classList.remove('on');
+        updateServerButtons();
+        toast(`Servidor ${idx + 1} selecionado`);
+        plyr?.destroy();
+        load();
+      };
+    });
+  }
 
   $('#dim').onclick = () => $('#overlay').classList.remove('on');
-  $('#opts').onclick = () => $('#overlay').classList.add('on');
+  $('#opts').onclick = () => {
+    updateServerButtons();
+    $('#overlay').classList.add('on');
+  };
 }

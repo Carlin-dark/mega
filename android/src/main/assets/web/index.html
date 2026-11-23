@@ -89,21 +89,61 @@
 
 <div id="view-profile" class="hide">
   <div class="sec" style="padding-top:6px">
-    <div class="box"><div class="av">M</div><div><b>Visitante</b><small id="p-stats">—</small></div></div>
-    <div class="sec-head"><h3>Preferências</h3></div>
-    <div class="box" style="justify-content:space-between">
-      <div><b>Áudio padrão</b><small>Usado ao abrir episódios</small></div>
-      <div class="ctrl" style="padding:0"><button class="tag on" data-audio="leg">LEG</button><button class="tag" data-audio="dub">DUB</button></div>
+    <div class="box">
+      <div class="av">M</div>
+      <div><b>Conta / Perfil</b><small id="p-account">Visitante · Conectar em breve</small></div>
     </div>
-    <div class="box" style="justify-content:space-between">
-      <div><b>Servidor</b><small>Player interno ou iframe</small></div>
-      <div class="ctrl" style="padding:0"><button class="tag on" data-srv="native">Nativo</button><button class="tag" data-srv="iframe">Iframe</button></div>
+
+    <div class="sec-head"><h3>Estatísticas</h3></div>
+    <div class="box">
+      <div><b>Resumo de Atividade</b><small id="p-stats">—</small></div>
     </div>
+
+    <div class="sec-head"><h3>Preferências de Reprodução</h3></div>
+
     <div class="box" style="justify-content:space-between">
-      <div><b>Limpar dados</b><small>Lista, histórico e ajustes</small></div>
+      <div><b>Áudio Padrão</b><small>Usado ao abrir episódios</small></div>
+      <div class="ctrl" style="padding:0">
+        <button class="tag" data-pref-audio="leg">LEG</button>
+        <button class="tag" data-pref-audio="dub">DUB</button>
+      </div>
+    </div>
+
+    <div class="box" style="justify-content:space-between">
+      <div><b>Servidor Padrão</b><small>Priorizado no player</small></div>
+      <div class="ctrl" style="padding:0;gap:4px">
+        <button class="tag" data-pref-srv="0">Servidor 1</button>
+        <button class="tag" data-pref-srv="1">Servidor 2</button>
+        <button class="tag" data-pref-srv="2">Servidor 3</button>
+        <button class="tag" data-pref-srv="3">Servidor 4</button>
+        <button class="tag" data-pref-srv="4">Servidor 5</button>
+      </div>
+    </div>
+
+    <div class="box" style="justify-content:space-between">
+      <div><b>Qualidade Preferida</b><small>Resolução ao iniciar vídeo</small></div>
+      <div class="ctrl" style="padding:0">
+        <button class="tag" data-pref-qual="auto">Auto</button>
+        <button class="tag" data-pref-qual="1080">1080p</button>
+        <button class="tag" data-pref-qual="720">720p</button>
+        <button class="tag" data-pref-qual="480">480p</button>
+      </div>
+    </div>
+
+    <div class="box" style="justify-content:space-between">
+      <div><b>Próximo Episódio</b><small>Reproduzir automaticamente</small></div>
+      <div class="ctrl" style="padding:0">
+        <button class="tag" data-pref-autonext="on">On</button>
+        <button class="tag" data-pref-autonext="off">Off</button>
+      </div>
+    </div>
+
+    <div class="box" style="justify-content:space-between">
+      <div><b>Limpar dados</b><small>Resetar lista, histórico e preferências</small></div>
       <button class="btn dark" id="wipe" style="padding:9px 14px">Limpar</button>
     </div>
-    <p class="empty">Mega Anime · scraper próprio · v1.0</p>
+
+    <p class="empty">Mega Anime · v1.2</p>
   </div>
 </div>
 

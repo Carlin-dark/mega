@@ -17,7 +17,6 @@
   </button>
   <a class="logo" href="index.html"><i><svg viewBox="0 0 24 24" fill="currentColor" style="width:14px;height:14px"><path d="M8 5v14l11-7z"/></svg></i>Mega<b>Anime</b></a>
   <span class="sp"></span>
-  <button class="icon-btn" id="srv" aria-label="Servidor"></button>
 </header>
 
 <div class="watch">
@@ -45,14 +44,16 @@
 <div class="overlay" id="overlay">
   <button class="dim-close" id="dim" aria-label="Fechar"></button>
   <div class="sheet">
-    <h4>Reprodução</h4>
-    <div class="box">
-      <div><b>Áudio</b><small>Trilha do episódio</small></div>
-      <div class="ctrl" style="padding:0"><button class="tag" data-audio="leg">LEG</button><button class="tag" data-audio="dub">DUB</button></div>
-    </div>
-    <div class="box">
-      <div><b>Servidor</b><small>Player interno ou iframe</small></div>
-      <div class="ctrl" style="padding:0"><button class="tag" data-srv="native">Nativo</button><button class="tag" data-srv="iframe">Iframe</button></div>
+    <h4>Opções de Servidor</h4>
+    <div class="box" style="flex-direction:column;align-items:flex-start;gap:10px">
+      <div><b>Servidor</b><small>Escolha uma opção para reproduzir</small></div>
+      <div class="ctrl" id="srv-options" style="padding:0;width:100%;display:flex;flex-wrap:wrap;gap:8px">
+        <button class="tag" data-source-idx="0">Servidor 1</button>
+        <button class="tag" data-source-idx="1">Servidor 2</button>
+        <button class="tag" data-source-idx="2">Servidor 3</button>
+        <button class="tag" data-source-idx="3">Servidor 4</button>
+        <button class="tag" data-source-idx="4">Servidor 5</button>
+      </div>
     </div>
   </div>
 </div>
