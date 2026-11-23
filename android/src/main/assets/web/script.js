@@ -1,4 +1,4 @@
-/* Mega Anime — Refactored & Polished with Jikan & AniList Poster Fallback & Automatic Server Resolution */
+/* Mega Anime — Refactored & Polished with Jikan Fallback, Servidores 1-5, Multi-Source Search & Advanced Player */
 const API = (window.API_BASE || 'https://mega-la8q.onrender.com').replace(/\/+$/, '');
 const $ = (s, r = document) => r.querySelector(s);
 const $$ = (s, r = document) => [...r.querySelectorAll(s)];
@@ -6,11 +6,11 @@ const esc = (s = '') => String(s).replace(/[&<>"]/g, c => ({ '&': '&amp;', '<': 
 const img = (u) => (u ? `${API}/img?u=${encodeURIComponent(u)}` : '');
 
 const DEFAULT_SOURCES = [
-  { id: 'animesonline', name: 'AnimesOnline' },
-  { id: 'animefire', name: 'AnimeFire' },
-  { id: 'betteranime', name: 'BetterAnime' },
-  { id: 'animesroll', name: 'AnimesRoll' },
-  { id: 'anitube', name: 'AniTube' }
+  { id: 'animesonline', name: 'Servidor 1' },
+  { id: 'animefire', name: 'Servidor 2' },
+  { id: 'betteranime', name: 'Servidor 3' },
+  { id: 'animesroll', name: 'Servidor 4' },
+  { id: 'anitube', name: 'Servidor 5' }
 ];
 
 const store = {
@@ -34,14 +34,14 @@ const ICONS = {
   site: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" style="width:13px;height:13px;margin-right:4px"><path d="M14 3h7v7"/><path d="M10 14 21 3"/><path d="M21 14v6a1 1 0 0 1-1 1H4a1 1 0 0 1-1-1V4a1 1 0 0 1 1-1h6"/></svg>'
 };
 
-/* Robust Poster Fallback via Jikan & AniList API */
+/* Robust Poster Fallback via Jikan API & AniList */
 const posterFallbackCache = {};
 async function getPosterFallback(title) {
   if (!title) return null;
   const clean = String(title).replace(/\b(dub\w*|leg\w*|temporada\w*|\d+ª?|eps?\.?\s*\d+)\b/gi, '').trim();
   if (posterFallbackCache[clean]) return posterFallbackCache[clean];
 
-  // 1. Try Jikan API
+  // 1. Try Jikan API (handles Jujutsu Kaisen and others perfectly)
   try {
     const r = await fetch(`https://api.jikan.moe/v4/anime?q=${encodeURIComponent(clean)}&limit=1`);
     const d = await r.json();
@@ -105,10 +105,11 @@ function unwrapOEmbed(data) {
 function isSiteAnimePage(u = '') {
   const unwrapped = unwrapOEmbed(u) || u;
   if (!unwrapped) return true;
+  if (unwrapped.trim().startsWith('{') || unwrapped.trim().startsWith('[')) return true;
   try {
     const parsed = new URL(unwrapped);
     const isAnimePath = /\/anime\/[^/]+\/?$/i.test(parsed.pathname) && !parsed.searchParams.get('ep');
-    const isAnimesOnline = /animesonline/i.test(parsed.hostname) && /\/anime\//i.test(parsed.pathname) && !/video\.g|videoplayback|\.mp4|\.m3u8/i.test(unwrapped);
+    const isAnimesOnline = /(animesonline|animefire|betteranime|animesroll|anitube)/i.test(parsed.hostname) && /\/anime\//i.test(parsed.pathname) && !/video\.g|videoplayback|\.mp4|\.m3u8|\.webm/i.test(unwrapped);
     return isAnimePath || isAnimesOnline;
   } catch {
     return /\/anime\/[^/?#]+$/i.test(String(unwrapped));
@@ -199,10 +200,19 @@ function card(a, ep, srcOverride) {
   el.href = `detail.html?source=${encodeURIComponent(src)}&slug=${encodeURIComponent(a.slug)}`;
   const c = cover(a);
   const titleEsc = esc(a.title || '');
+  const subtitle = esc([a.type, a.year].filter(Boolean).join(' • '));
   el.innerHTML = `${ep ? `<span class="ep">EP ${esc(ep)}</span>` : ''}
     <img loading="lazy" src="${c ? img(c) : ''}" alt="${titleEsc}" onerror="this.onerror=null; getPosterFallback('${titleEsc}').then(u=>{if(u) this.src=u;});">
     <div class="pl"><span>${ICONS.play}</span></div>
-    <div class="cap"><b>${titleEsc}</b><small>${esc([a.type, a.year].filter(Boolean).join(' • ') || src)}</small></div>`;
+    <div class="cap"><b>${titleEsc}</b><small>${subtitle}</small></div>`;
+  if (!c) {
+    getPosterFallback(a.title).then(u => {
+      if (u) {
+        const im = el.querySelector('img');
+        if (im) im.src = u;
+      }
+    });
+  }
   return el;
 }
 
@@ -220,7 +230,9 @@ async function fetchSources() {
   try {
     const r = await json(`${API}/api/sources`);
     const d = r;
-    if (Array.isArray(d?.sources) && d.sources.length) return d.sources;
+    if (Array.isArray(d?.sources) && d.sources.length) {
+      return d.sources.map((s, i) => ({ id: s.id, name: `Servidor ${i + 1}` }));
+    }
   } catch {}
   return DEFAULT_SOURCES;
 }
@@ -244,11 +256,15 @@ if (document.body.dataset.page === 'home') {
   let currentSource = store.get('source', 'animesonline');
   let availableSources = DEFAULT_SOURCES;
 
-  const paintHero = () => {
+  const paintHero = async () => {
     const a = heroPool[hi % heroPool.length];
     if (!a) return;
-    const c = cover(a);
+    let c = cover(a);
     const titleEsc = esc(a.title || '');
+    if (!c) {
+      c = await getPosterFallback(a.title);
+      if (c) a.cover = c;
+    }
     $('#hero').innerHTML = `${c ? `<img src="${img(c)}" alt="" onerror="this.onerror=null; getPosterFallback('${titleEsc}').then(u=>{if(u)this.src=u});">` : ''}
       <div class="inner">
         <div class="chips"><span class="chip red">Em destaque</span>
@@ -298,7 +314,6 @@ if (document.body.dataset.page === 'home') {
 
   async function loadHome() {
     availableSources = await fetchSources();
-
     $('#latest').innerHTML = '<p class="empty">Carregando…</p>';
     $('#top').innerHTML = '';
     $('#added').innerHTML = '';
@@ -308,7 +323,7 @@ if (document.body.dataset.page === 'home') {
       if (!uniq.length) throw new Error('vazio');
 
       heroPool = uniq.slice(0, 8);
-      paintHero();
+      await paintHero();
       startHero();
       if (!$('#hero').dataset.wired) { $('#hero').dataset.wired = '1'; heroSwipe(); }
 
@@ -363,6 +378,7 @@ if (document.body.dataset.page === 'home') {
   $('#btn-search').onclick = () => { $('#searchbar').classList.toggle('hide'); $('#q').focus(); };
   $('#btn-bell').onclick = () => { show('home'); toast('Novos episódios na Home'); };
 
+  /* UNIFIED PARALLEL MULTI-SOURCE SEARCH */
   $('#searchbar').onsubmit = async (e) => {
     e.preventDefault();
     const q = $('#q').value.trim();
@@ -375,9 +391,13 @@ if (document.body.dataset.page === 'home') {
       const promises = sources.map(s => json(`${API}/api/search?q=${encodeURIComponent(q)}&source=${s.id}`).catch(() => null));
       const settled = await Promise.allSettled(promises);
       let allResults = [];
-      settled.forEach(res => {
+      settled.forEach((res, idx) => {
         if (res.status === 'fulfilled' && res.value) {
-          allResults.push(...asList(res.value));
+          const items = asList(res.value);
+          items.forEach(item => {
+            if (!item.source) item.source = sources[idx].id;
+          });
+          allResults.push(...items);
         }
       });
       const uniq = [...new Map(allResults.map(item => [item.slug || item.title, item])).values()];
@@ -547,7 +567,12 @@ if (document.body.dataset.page === 'detail') {
       document.title = data.title;
       $('#title').textContent = data.title;
 
-      const posterUrl = data.cover ? img(data.cover) : null;
+      let posterUrl = data.cover ? img(data.cover) : null;
+      if (!posterUrl) {
+        const u = await getPosterFallback(data.title);
+        if (u) posterUrl = u;
+      }
+
       if (posterUrl) {
         $('#poster').src = posterUrl;
         $('#poster').onerror = async function() {
@@ -559,13 +584,6 @@ if (document.body.dataset.page === 'detail') {
           }
         };
         $('#blur').innerHTML = `<img src="${posterUrl}" alt="">`;
-      } else {
-        const u = await getPosterFallback(data.title);
-        const displayUrl = u || '';
-        if (displayUrl) {
-          $('#poster').src = displayUrl;
-          $('#blur').innerHTML = `<img src="${displayUrl}" alt="">`;
-        }
       }
 
       $('#syn').textContent = data.synopsis || 'Sem sinopse.';
@@ -899,6 +917,12 @@ if (document.body.dataset.page === 'player') {
       video.src = bestSrc;
       if (info?.cover) video.poster = img(info.cover);
 
+      // Automatic Fullscreen Request
+      try {
+        if (video.requestFullscreen) video.requestFullscreen();
+        else if (video.webkitRequestFullscreen) video.webkitRequestFullscreen();
+      } catch {}
+
       video.addEventListener('error', () => {
         if (tries++ < 2) { toast('Link expirou, resolvendo de novo'); load(); return; }
         if (embedUrl && mountFrame(embedUrl)) toast('Trocando para player embed');
@@ -1015,12 +1039,19 @@ if (document.body.dataset.page === 'player') {
     };
   });
 
-  const srvLabel = () => `Servidor: ${server === 'native' ? 'nativo' : 'iframe'}`;
+  const srvLabel = () => {
+    const idx = sourcesList.findIndex(s => s.id === source);
+    return `Servidor: ${idx >= 0 ? idx + 1 : 1}`;
+  };
   $('#srv').innerHTML = `${ICONS.layers}`;
   $('#srv').title = srvLabel();
   $('#srv').onclick = () => {
-    server = server === 'native' ? 'iframe' : 'native';
-    store.set('srv', server);
+    // Cycle through sources as Servidor 1, 2, 3, 4, 5
+    if (!sourcesList || !sourcesList.length) sourcesList = DEFAULT_SOURCES;
+    const curIdx = sourcesList.findIndex(s => s.id === source);
+    const nextIdx = (curIdx + 1) % sourcesList.length;
+    source = sourcesList[nextIdx].id;
+    store.set('source', source);
     $('#srv').title = srvLabel();
     toast(srvLabel());
     plyr?.destroy();

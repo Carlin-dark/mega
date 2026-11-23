@@ -2,18 +2,42 @@ import { $, apiUrl, cardHTML, skeletons, savedSource } from './ui.js';
 
 const p = new URLSearchParams(location.search);
 const q = p.get('q') || '';
-const source = p.get('source') || '';
 if ($('#title')) $('#title').textContent = `Resultados para "${q}"`;
 if ($('#grid')) $('#grid').innerHTML = skeletons(8);
 
-const qs = new URLSearchParams({ q });
-if (source) qs.set('source', source);
+async function bootSearch() {
+  let sources = [];
+  try {
+    const meta = await fetch(apiUrl('/api/sources')).then(r => r.json());
+    sources = meta?.sources || [];
+  } catch {}
+  if (!sources.length) {
+    sources = [
+      { id: 'animesonline', name: 'AnimesOnline' },
+      { id: 'animefire', name: 'AnimeFire' },
+      { id: 'betteranime', name: 'BetterAnime' },
+      { id: 'animesroll', name: 'AnimesRoll' },
+      { id: 'anitube', name: 'AniTube' }
+    ];
+  }
 
-const data = await fetch(apiUrl(`/api/search?${qs.toString()}`)).then(r => r.json()).catch(() => null);
-const results = Array.isArray(data) ? data : (data?.results || []);
+  const promises = sources.map(s => fetch(apiUrl(`/api/search?q=${encodeURIComponent(q)}&source=${s.id}`)).then(r => r.json()).catch(() => null));
+  const settled = await Promise.allSettled(promises);
+  let allResults = [];
+  settled.forEach(res => {
+    if (res.status === 'fulfilled' && res.value) {
+      const list = Array.isArray(res.value) ? res.value : (res.value?.results || []);
+      allResults.push(...list);
+    }
+  });
 
-if (!results.length) {
-  if ($('#grid')) $('#grid').outerHTML = `<div class="empty"><b>Nada encontrado</b>O site pode não indexar este título. Tente outro nome ou outra fonte.</div>`;
-} else if ($('#grid')) {
-  $('#grid').innerHTML = results.map(i => cardHTML(i, i.source || source || savedSource())).join('');
+  const uniq = [...new Map(allResults.map(i => [i.slug || i.title, i])).values()];
+
+  if (!uniq.length) {
+    if ($('#grid')) $('#grid').outerHTML = `<div class="empty"><b>Nada encontrado</b>Nenhuma fonte encontrou este título. Tente outro nome.</div>`;
+  } else if ($('#grid')) {
+    $('#grid').innerHTML = uniq.map(i => cardHTML(i, i.source || savedSource())).join('');
+  }
 }
+
+bootSearch();

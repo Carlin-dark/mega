@@ -23,3 +23,9 @@ GET /img?u=<url_encoded>
 - Player é iframe do blogger: o mp4 expira (~30 min), resolva no toque do play.
 - `?t=` é a temporada; sem ele volta sempre à T1.
 - Se o site mudar de layout, só `scraper-utils.js` muda.
+
+git add .
+
+git commit -m "Atualiza scraper do animesonline e corrige MainActivity"
+
+git push origin main
