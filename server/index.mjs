@@ -530,8 +530,16 @@ async function seasonPayload(year, season) {
       const src = getSource(defaultSourceId());
       const { items: cat } = await budget(Promise.resolve(src.catalog(1)), 10000);
       items = (cat || [])
-        .filter((a) => !a.year || String(a.year) === String(year))
         .map((a) => cardOf(a, src.meta.id));
+    } catch {}
+  }
+
+  if (!items.length) {
+    try {
+      const raw = await budget(Promise.resolve(getSource(defaultSourceId()).home()), 10000);
+      const hero = (raw?.hero || []).map((i) => cardOf(i, defaultSourceId()));
+      const sections = (raw?.sections || []).flatMap((sec) => sec.items || []);
+      items = [...hero, ...sections].map((i) => cardOf(i, defaultSourceId()));
     } catch {}
   }
 

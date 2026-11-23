@@ -181,7 +181,7 @@ async function copyShare(url, title) {
   catch { window.prompt('Copie a mensagem:', msg); }
 }
 
-/* Robust Poster Fallback via Jikan API & AniList */
+/* Robust Poster Fallback via backend (sem chamadas externas diretas no navegador) */
 const posterFallbackCache = {};
 async function getPosterFallback(title) {
   if (!title) return null;
@@ -189,34 +189,18 @@ async function getPosterFallback(title) {
   if (posterFallbackCache[clean]) return posterFallbackCache[clean];
 
   try {
-    const r = await fetch(`https://api.jikan.moe/v4/anime?q=${encodeURIComponent(clean)}&limit=1`);
+    const ctrl = new AbortController();
+    const t = setTimeout(() => ctrl.abort(), 5000);
+    const r = await fetch(apiUrl(`/api/search?q=${encodeURIComponent(clean)}`), { signal: ctrl.signal });
+    clearTimeout(t);
     const d = await r.json();
-    const url = d?.data?.[0]?.images?.jpg?.large_image_url || d?.data?.[0]?.images?.jpg?.image_url;
-    if (url) {
-      posterFallbackCache[clean] = url;
-      return url;
-    }
-  } catch {}
-
-  try {
-    const query = `
-      query ($search: String) {
-        Media(search: $search, type: ANIME) {
-          coverImage {
-            extraLarge
-            large
-          }
-        }
-      }
-    `;
-    const r = await fetch('https://graphql.anilist.co', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json', 'Accept': 'application/json' },
-      body: JSON.stringify({ query, variables: { search: clean } })
+    const results = Array.isArray(d) ? d : (d?.results || []);
+    const match = results.find((i) => {
+      const n = normText(i.title || i.slug);
+      return n === clean || n.includes(clean) || clean.includes(n);
     });
-    const d = await r.json();
-    const url = d?.data?.Media?.coverImage?.extraLarge || d?.data?.Media?.coverImage?.large;
-    if (url) {
+    if (match?.cover || match?.poster) {
+      const url = match.cover || match.poster;
       posterFallbackCache[clean] = url;
       return url;
     }

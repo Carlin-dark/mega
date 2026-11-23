@@ -97,11 +97,8 @@ async function load() {
   const id = ++reqId;
   $('#grid').innerHTML = skeletons(8);
 
-  // 1) backend (Jikan via proxy) 2) Jikan direto 3) catálogo local filtrado
+  // 1) backend (Jikan via proxy + catálogo como fallback) 2) catálogo local filtrado
   let items = normalize(await fetchJson(apiUrl(`/api/seasons/${year}/${season}`)));
-  if (!items.length) {
-    items = normalize(await fetchJson(`https://api.jikan.moe/v4/seasons/${year}/${season}?limit=24&sfw`));
-  }
   if (!items.length) {
     const home = normalize(await fetchJson(apiUrl(`/api/home`), 9000));
     items = home.filter((a) => !a.year || String(a.year) === String(year));
