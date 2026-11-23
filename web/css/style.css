@@ -350,3 +350,71 @@ select.tag option{background:var(--bg2);color:var(--txt);padding:8px}
   flex-shrink: 0;
 }
 
+/* ===== FIX: seletor de ano estilizado (2030 → 2000) ===== */
+.cal-bar { display: flex; gap: 10px; flex-wrap: wrap; align-items: center; padding: 22px; }
+.cal-seasons { display: flex; gap: 6px; flex-wrap: wrap; }
+.cal-s {
+  background: #15151c; color: #b9b9c6; border: 1px solid #26262f; border-radius: 10px;
+  padding: 8px 14px; font-size: 13px; font-weight: 700; cursor: pointer; transition: .18s;
+}
+.cal-s:hover { border-color: var(--red); color: #fff; }
+.cal-s.on { background: var(--red); border-color: var(--red); color: #fff; }
+
+.yearpick-wrap { position: relative; }
+.yearpick-btn {
+  display: inline-flex; align-items: center; gap: 8px; background: #15151c; color: #fff;
+  border: 1px solid #26262f; border-radius: 10px; padding: 8px 14px; font-size: 13px;
+  font-weight: 800; cursor: pointer; transition: .18s;
+}
+.yearpick-btn:hover { border-color: var(--red); }
+.yearpick {
+  position: absolute; z-index: 60; top: calc(100% + 8px); right: 0; width: 268px;
+  background: #0e0e13; border: 1px solid #26262f; border-radius: 14px; padding: 10px;
+  box-shadow: 0 18px 44px rgba(0,0,0,.6); opacity: 0; visibility: hidden;
+  transform: translateY(-6px); transition: .16s;
+}
+.yearpick.on { opacity: 1; visibility: visible; transform: none; }
+.yearpick-head { display: flex; align-items: center; justify-content: space-between; padding: 2px 4px 8px; }
+.yearpick-head b { font-size: 12px; letter-spacing: .04em; text-transform: uppercase; color: #8d8d9c; }
+.yearpick-x { background: none; border: 0; color: #b9b9c6; cursor: pointer; width: 22px; height: 22px; }
+.yearpick-x svg { width: 14px; height: 14px; }
+.yearpick-grid { display: grid; grid-template-columns: repeat(5, 1fr); gap: 5px; max-height: 208px; overflow: auto; }
+.yearpick-i {
+  background: #15151c; color: #cfcfda; border: 1px solid #22222b; border-radius: 8px;
+  padding: 8px 0; font-size: 12px; font-weight: 700; cursor: pointer; transition: .14s;
+}
+.yearpick-i:hover { border-color: var(--red); color: #fff; }
+.yearpick-i.on { background: var(--red); border-color: var(--red); color: #fff; }
+@media (max-width: 420px) { .yearpick { right: auto; left: 0; width: 240px; } }
+
+/* ===== FIX: overlay de título do episódio ===== */
+.player-title {
+  position: absolute; top: 12px; left: 12px; z-index: 5; pointer-events: none;
+  background: rgba(0,0,0,.62); color: #fff; font-size: 12px; font-weight: 800;
+  letter-spacing: .02em; padding: 5px 10px; border-radius: 6px;
+  border-left: 3px solid var(--red);
+}
+
+/* ===== FIX: tela de erro do player ===== */
+.player-error {
+  position: absolute; inset: 0; display: flex; flex-direction: column; align-items: center;
+  justify-content: center; gap: 16px; text-align: center; padding: 24px; background: #000;
+}
+.player-error p { color: #d6d6e0; font-size: 14px; max-width: 320px; }
+.player-error .row { display: flex; gap: 10px; flex-wrap: wrap; justify-content: center; }
+
+/* ===== FIX: card de próximo episódio ===== */
+.next-card {
+  position: absolute; right: 14px; bottom: 74px; z-index: 8; width: 214px;
+  background: rgba(12,12,17,.94); border: 1px solid #2a2a35; border-radius: 12px;
+  padding: 12px; display: flex; flex-direction: column; gap: 3px;
+  box-shadow: 0 14px 34px rgba(0,0,0,.6);
+}
+.next-card b { font-size: 11px; text-transform: uppercase; letter-spacing: .05em; color: var(--red); }
+.next-card span { font-size: 15px; font-weight: 800; color: #fff; }
+.next-card small { font-size: 11px; color: #9a9aa8; }
+.next-card .row { display: flex; gap: 8px; margin-top: 8px; }
+.next-card .btn { flex: 1; padding: 7px 0; font-size: 12px; }
+@media (max-width: 480px) { .next-card { right: 10px; left: 10px; width: auto; bottom: 88px; } }
+
+.hide { display: none !important; }

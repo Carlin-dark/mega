@@ -94,12 +94,13 @@ app.get(['/api/search', '/api/search/:source'], async (req, res) => {
   const explicit = req.query.source || req.params.source;
   const targets = explicit
     ? [getSource(explicit)]
-    : [getSource(DEFAULT_SOURCE), ...listSources().map((x) => getSource(x.id))];
+    : [...new Set([DEFAULT_SOURCE, ...listSources().map((x) => x.id)])].map((id) => getSource(id));
 
   const out = [];
-  await Promise.all([...new Set(targets)].map(async (t) => {
+  // FIX: 10s por fonte; o cliente espera 15s, então nada é abortado no meio
+  await Promise.all(targets.map(async (t) => {
     try {
-      const items = await budget(Promise.resolve(t.search(q)), 14000);
+      const items = await budget(Promise.resolve(t.search(q)), 10000);
       (items || []).forEach((i) => out.push(cardOf(i, t.meta.id)));
     } catch {}
   }));
@@ -269,10 +270,47 @@ app.get(['/api/streams/:slug/:ep', '/api/streams/:source/:slug/:ep'], async (req
   }
 });
 
+/* ===== temporadas / calendário (FIX: cache + fallback + /api/calendar) ===== */
+const seasonCache = new Map();
+const seasonKey = (y, s) => `${y}:${s}`;
+
+const asItems = (d) => (Array.isArray(d) ? d : (d?.items || d?.data || []));
+
+async function seasonPayload(year, season) {
+  const key = seasonKey(year, season);
+  const hit = seasonCache.get(key);
+  if (hit && Date.now() - hit.t < 30 * 60_000) return hit.v;
+
+  let items = [];
+
+  // 1) Jikan via módulo
+  try {
+    const d = await budget(jikan.season(year, season), 12000);
+    items = asItems(d);
+  } catch {}
+
+  // 2) catálogo local filtrado pelo ano
+  if (!items.length) {
+    try {
+      const src = getSource(DEFAULT_SOURCE);
+      const { items: cat } = await budget(Promise.resolve(src.catalog(1)), 10000);
+      items = (cat || [])
+        .filter((a) => !a.year || String(a.year) === String(year))
+        .map((a) => cardOf(a, DEFAULT_SOURCE));
+    } catch {}
+  }
+
+  const payload = { year, season, items };
+  seasonCache.set(key, { t: Date.now(), v: payload });
+  return payload;
+}
+
 app.get('/api/seasons', async (_req, res) => {
   try {
-    const d = await budget(jikan.now(), 8000);
-    ok(res, d, 900);
+    // FIX: o módulo exporta seasonNow, não now
+    const fn = jikan.seasonNow || jikan.now;
+    const d = await budget(Promise.resolve(fn()), 12000);
+    ok(res, { items: asItems(d) }, 900);
   } catch {
     ok(res, { items: [] }, 60);
   }
@@ -280,12 +318,24 @@ app.get('/api/seasons', async (_req, res) => {
 
 app.get('/api/seasons/:year/:season', async (req, res) => {
   const year = Number(req.params.year);
-  const season = req.params.season;
+  const season = String(req.params.season || '').toLowerCase();
+  if (!year || !season) return res.json({ year, season, items: [] });
   try {
-    const d = await budget(jikan.season(year, season), 8000);
-    ok(res, d, 900);
-  } catch {
-    ok(res, { year, season, items: [] }, 60);
+    ok(res, await seasonPayload(year, season), 900);
+  } catch (e) {
+    fail(res, e);
+  }
+});
+
+// FIX: rota que o frontend chamava e não existia (404)
+app.get('/api/calendar', async (req, res) => {
+  const now = new Date();
+  const year = Number(req.query.year) || now.getFullYear();
+  const season = String(req.query.season || '').toLowerCase() || 'winter';
+  try {
+    ok(res, await seasonPayload(year, season), 300);
+  } catch (e) {
+    fail(res, e);
   }
 });
 

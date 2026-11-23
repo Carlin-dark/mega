@@ -234,7 +234,9 @@ async function jsonWithTimeout(url, ms = 5000) {
     throw e;
   }
 }
-const json = (u) => jsonWithTimeout(u, 6000);
+/* FIX: cliente esperava 6s enquanto a busca do servidor leva até 14s por fonte.
+   Aumentado para 15s para não abortar antes da resposta do backend. */
+const json = (u) => jsonWithTimeout(u, 15000);
 
 async function fetchSources() {
   try {
@@ -448,7 +450,8 @@ if (document.body.dataset.page === 'home') {
     box.innerHTML = '<p class="empty">Buscando em todas as fontes em paralelo…</p>';
     try {
       const sources = await fetchSources();
-      const promises = sources.map(s => jsonWithTimeout(`${API}/api/search?q=${encodeURIComponent(q)}&source=${s.id}`, 4500).catch(() => null));
+      /* FIX: 15s por fonte (o backend usa budget de 14s) em vez de 4.5s */
+      const promises = sources.map(s => jsonWithTimeout(`${API}/api/search?q=${encodeURIComponent(q)}&source=${s.id}`, 15000).catch(() => null));
       const settled = await Promise.allSettled(promises);
       let allResults = [];
       settled.forEach((res, idx) => {
@@ -462,7 +465,7 @@ if (document.body.dataset.page === 'home') {
       });
       const uniq = [...new Map(allResults.map(item => [item.slug || item.title, item])).values()];
       box.innerHTML = '';
-      if (!uniq.length) return failBox(box, `Nada encontrado para "${q}" em nenhuma fonte.`);
+      if (!uniq.length) return failBox(box, `Nada encontrado para "${q}" em nenhuma fonte.`, () => $('#searchbar').requestSubmit());
       uniq.forEach(a => box.appendChild(card(a, null, a.source || sources[0]?.id)));
     } catch {
       failBox(box, 'Erro na busca.', () => $('#searchbar').requestSubmit());
@@ -501,17 +504,67 @@ if (document.body.dataset.page === 'home') {
 
   function initSeasons() {
     const sel = $('#s-year');
-    if (sel && !sel.options.length) {
-      const curYear = new Date().getFullYear();
-      for (let i = 2030; i >= 2000; i--) sel.add(new Option(i, i));
-      sel.value = curYear;
-      sel.onchange = () => loadSeason();
+    if (sel) {
+      if (!sel.options.length) {
+        for (let i = 2030; i >= 2000; i--) sel.add(new Option(i, i));
+        sel.value = Math.min(2030, new Date().getFullYear());
+      }
+      /* FIX: select cru escondido, substituído por modal no tema do site */
+      sel.classList.add('hide');
+      buildYearPicker(sel);
+      sel.onchange = () => { syncYearLabel(sel); loadSeason(); };
       $$('[data-s]').forEach(b => b.onclick = () => {
         $$('[data-s]').forEach(x => x.classList.toggle('on', x === b));
         loadSeason(b.dataset.s);
       });
     }
     if (!seasonsReady) { seasonsReady = true; loadSeason(); }
+  }
+
+  /* FIX: modal de ano 2030 → 2000 estilizado */
+  function buildYearPicker(sel) {
+    if ($('#yearpick')) { syncYearLabel(sel); return; }
+    const wrap = document.createElement('div');
+    wrap.className = 'yearpick-wrap';
+    wrap.innerHTML = `<button type="button" class="yearpick-btn" id="yearpick-btn" aria-haspopup="dialog">
+        <span id="yearpick-label"></span>
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" style="width:14px;height:14px"><path d="m6 9 6 6 6-6"/></svg>
+      </button>
+      <div class="yearpick" id="yearpick" role="dialog" aria-label="Escolher ano">
+        <div class="yearpick-head"><b>Escolha o ano</b>
+          <button type="button" class="yearpick-x" id="yearpick-x" aria-label="Fechar">${ICONS.x}</button>
+        </div>
+        <div class="yearpick-grid" id="yearpick-grid"></div>
+      </div>`;
+    sel.parentElement.insertBefore(wrap, sel.nextSibling);
+
+    const grid = $('#yearpick-grid');
+    for (let y = 2030; y >= 2000; y--) {
+      const b = document.createElement('button');
+      b.type = 'button';
+      b.className = 'yearpick-i';
+      b.textContent = y;
+      b.dataset.y = String(y);
+      b.onclick = () => {
+        sel.value = String(y);
+        syncYearLabel(sel);
+        $('#yearpick').classList.remove('on');
+        loadSeason();
+      };
+      grid.appendChild(b);
+    }
+    $('#yearpick-btn').onclick = () => { $('#yearpick').classList.toggle('on'); syncYearLabel(sel); };
+    $('#yearpick-x').onclick = () => $('#yearpick').classList.remove('on');
+    document.addEventListener('click', (e) => {
+      if (!e.target.closest('.yearpick-wrap')) $('#yearpick')?.classList.remove('on');
+    });
+    syncYearLabel(sel);
+  }
+
+  function syncYearLabel(sel) {
+    const lbl = $('#yearpick-label');
+    if (lbl) lbl.textContent = sel.value;
+    $$('#yearpick-grid .yearpick-i').forEach(b => b.classList.toggle('on', b.dataset.y === String(sel.value)));
   }
 
   function renderSeasonCards(box, list) {
@@ -555,8 +608,9 @@ if (document.body.dataset.page === 'home') {
 
     try {
       let list = [];
-      const p1 = jsonWithTimeout(`${API}/api/seasons/${y}/${s}`, 4000).catch(() => null);
-      const p2 = jsonWithTimeout(`https://api.jikan.moe/v4/seasons/${y}/${s}`, 4000).then(res => {
+      /* FIX: 12s (o backend responde em até 8s); antes 4s abortava sempre */
+      const p1 = jsonWithTimeout(`${API}/api/seasons/${y}/${s}`, 12000).catch(() => null);
+      const p2 = jsonWithTimeout(`https://api.jikan.moe/v4/seasons/${y}/${s}`, 12000).then(res => {
         if (Array.isArray(res?.data)) {
           return res.data.map(item => ({
             title: item.title,
@@ -577,9 +631,12 @@ if (document.body.dataset.page === 'home') {
         list = res2.value;
       }
 
+      /* FIX: /api/calendar não existe no backend; agora o 3º fallback é o catálogo local */
       if (!list || !list.length) {
         try {
-          list = asList(await jsonWithTimeout(`${API}/api/calendar`, 3000));
+          const homeList = asList(await jsonWithTimeout(`${API}/api/home?source=${encodeURIComponent(currentSource)}`, 9000));
+          list = homeList.filter(a => !a.year || String(a.year) === String(y));
+          if (!list.length) list = homeList;
         } catch {}
       }
 
@@ -941,7 +998,15 @@ if (document.body.dataset.page === 'player') {
   let server = store.get('srv', 'native');
   let qualityPref = store.get('quality_pref', 'auto');
   let autoNextPref = store.get('auto_next', 'on');
+  const autoFsPref = store.get('auto_fs', 'on');
   let info = null, plyr = null, tries = 0, sourcesList = DEFAULT_SOURCES;
+
+  /* FIX: timeout de carregamento e controle do card de próximo episódio */
+  const LOAD_TIMEOUT = 12000;
+  let loadGuard = null;
+  let nextTimer = null;
+  let nextShown = false;
+  let lastEmbed = null;
 
   $('#back').onclick = () => history.length > 1 ? history.back() : location.href = 'index.html';
 
@@ -992,16 +1057,102 @@ if (document.body.dataset.page === 'player') {
     });
   }
 
+  /* FIX: rótulo do overlay (T1 • Episódio 08 / OVA / Especial / Filme) */
+  const epLabel = () => {
+    const t = String(info?.type || '').toLowerCase();
+    const n = String(ep).padStart(2, '0');
+    if (/ova/.test(t)) return `T${season} • OVA ${n}`;
+    if (/especial/.test(t)) return `T${season} • Especial ${n}`;
+    if (/filme|movie/.test(t)) return `T${season} • Filme ${n}`;
+    return `T${season} • Episódio ${n}`;
+  };
+
+  const titleOverlay = () => `<div class="player-title">${esc(epLabel())}</div>`;
+
+  /* FIX: fullscreen centralizado (Android nativo, senão Fullscreen API) */
+  function requestFs(el) {
+    const target = el || $('#stage');
+    try {
+      if (window.Android && window.Android.fullscreen) { window.Android.fullscreen(); return; }
+    } catch {}
+    try {
+      if (target?.requestFullscreen) target.requestFullscreen().catch(() => {});
+      else if (target?.webkitRequestFullscreen) target.webkitRequestFullscreen();
+    } catch {}
+  }
+
+  /* FIX: card de próximo episódio com contagem de 10s */
+  function clearNextCard() {
+    clearInterval(nextTimer);
+    nextTimer = null;
+    nextShown = false;
+    $('#next-card')?.remove();
+  }
+
+  function nextEpisode() {
+    const se = info?.seasons.find(s => s.season === season) || info?.seasons[0];
+    const list = (se?.episodes || []).filter(e => e.audio === audio);
+    const i = list.findIndex(e => (e.number || 0) === ep);
+    return i >= 0 ? list[i + 1] : null;
+  }
+
+  function showNextCard(nextEp) {
+    if (!nextEp || $('#next-card')) return;
+    let left = 10;
+    const card = document.createElement('div');
+    card.id = 'next-card';
+    card.className = 'next-card';
+    card.innerHTML = `<b>Próximo episódio</b>
+      <span>EP ${String(nextEp.number).padStart(2, '0')}</span>
+      <small>Começando em <i id="next-count">10</i>s</small>
+      <div class="row">
+        <button class="btn" id="next-go" type="button">Ir agora</button>
+        <button class="btn dark" id="next-cancel" type="button">Cancelar</button>
+      </div>`;
+    $('#stage').appendChild(card);
+    $('#next-go').onclick = () => { clearNextCard(); next(); };
+    $('#next-cancel').onclick = () => clearNextCard();
+    nextTimer = setInterval(() => {
+      left -= 1;
+      const c = $('#next-count');
+      if (c) c.textContent = String(left);
+      if (left <= 0) { clearNextCard(); next(); }
+    }, 1000);
+  }
+
+  /* FIX: tela de erro com retry e fallback alternativo */
+  function errorScreen(msg = 'Erro ao carregar episódio, tente novamente mais tarde.') {
+    clearTimeout(loadGuard);
+    clearNextCard();
+    $('#stage').innerHTML = `<div class="player-error">
+      <p>${esc(msg)}</p>
+      <div class="row">
+        <button class="btn" id="err-retry" type="button">Tentar novamente</button>
+        <button class="btn dark" id="err-embed" type="button">Usar player alternativo</button>
+      </div>
+    </div>`;
+    $('#err-retry').onclick = () => { tries = 0; load(); };
+    $('#err-embed').onclick = () => {
+      if (lastEmbed && mountFrame(lastEmbed)) return;
+      errorScreen('Nenhum player alternativo disponível para este episódio.');
+    };
+  }
+
+  /* FIX: iframe com allow/allowfullscreen/referrerpolicy e overlay de título */
   function mountFrame(src) {
     const realSrc = unwrapOEmbed(src) || src;
     if (!realSrc || isSiteAnimePage(realSrc)) return false;
-    $('#stage').innerHTML = `<iframe src="${esc(realSrc)}" allow="autoplay;fullscreen;encrypted-media;picture-in-picture" allowfullscreen referrerpolicy="no-referrer-when-downgrade" style="width:100%;height:100%;border:0"></iframe>`;
+    clearTimeout(loadGuard);
+    clearNextCard();
+    try { plyr?.pause(); } catch {}
+    $('#stage').innerHTML = `<iframe src="${esc(realSrc)}" allow="autoplay; fullscreen; encrypted-media; picture-in-picture" allowfullscreen referrerpolicy="no-referrer-when-downgrade" style="width:100%;height:100%;border:0"></iframe>${titleOverlay()}`;
     $('#qbox').innerHTML = '';
     const retry = document.createElement('button');
     retry.className = 'tag';
     retry.textContent = 'Tentar vídeo direto';
     retry.onclick = () => { server = 'native'; store.set('srv', 'native'); tries = 0; load(); };
     $('#qbox').appendChild(retry);
+    if (autoFsPref !== 'off') requestFs($('#stage'));
     return true;
   }
 
@@ -1027,15 +1178,18 @@ if (document.body.dataset.page === 'player') {
   }
 
   async function load() {
+    clearTimeout(loadGuard);
+    clearNextCard();
     $('#stage').innerHTML = '<p class="empty">Resolvendo episódio…</p>';
     $('#qbox').innerHTML = '';
     try {
       const resolved = await resolveStreamWithFallback();
       if (!resolved) {
-        $('#stage').innerHTML = '<p class="empty">Episódio sem stream disponível em nenhum servidor. Tente outro áudio.</p>';
+        errorScreen('Episódio sem stream disponível em nenhum servidor. Tente outro áudio.');
         return;
       }
       const { d, list, embedUrl } = resolved;
+      lastEmbed = embedUrl || null;
 
       if (server === 'iframe' && embedUrl) {
         if (mountFrame(embedUrl)) {
@@ -1051,7 +1205,7 @@ if (document.body.dataset.page === 'player') {
             ...store.get('continue', []).filter(x => x.slug !== slug)].slice(0, 12));
           return;
         }
-        $('#stage').innerHTML = '<p class="empty">Episódio sem stream disponível. Tente outro áudio.</p>';
+        errorScreen('Episódio sem stream disponível. Tente outro áudio.');
         return;
       }
 
@@ -1064,8 +1218,10 @@ if (document.body.dataset.page === 'player') {
       const rawBestSrc = best.proxyUrl ? `${API}${best.proxyUrl}` : best.url;
       const bestSrc = unwrapOEmbed(rawBestSrc) || rawBestSrc;
 
+      /* FIX: vídeo direto com autoplay, playsinline, controles e overlay de título */
       $('#stage').innerHTML = `<div class="adv-player-wrapper" style="position:relative;width:100%;height:100%;background:#000">
-        <video id="v" playsinline crossorigin style="width:100%;height:100%;display:block"></video>
+        <video id="v" autoplay playsinline controls preload="metadata" crossorigin style="width:100%;height:100%;display:block"></video>
+        ${titleOverlay()}
         <div class="adv-overlay" style="position:absolute;inset:0;pointer-events:none;display:flex;flex-direction:column;justify-content:space-between;padding:12px">
           <div style="display:flex;justify-content:space-between;align-items:center;pointer-events:auto">
             <span class="ep-badge" style="background:var(--red);color:#fff;padding:3px 8px;border-radius:4px;font-size:11px;font-weight:900">EP ${ep}</span>
@@ -1090,18 +1246,27 @@ if (document.body.dataset.page === 'player') {
       video.src = bestSrc;
       if (info?.cover) video.poster = info.cover.startsWith('http') ? info.cover : img(info.cover);
 
-      const triggerFullscreen = () => {
-        try {
-          if (video.requestFullscreen) video.requestFullscreen().catch(() => {});
-          else if (video.webkitRequestFullscreen) video.webkitRequestFullscreen();
-        } catch {}
-      };
-      video.addEventListener('play', triggerFullscreen, { once: true });
+      /* FIX: auto_fs na montagem do player, não só no evento play */
+      if (autoFsPref !== 'off') {
+        requestFs(video);
+        video.addEventListener('loadedmetadata', () => { if (video.paused) requestFs(video); }, { once: true });
+      }
+
+      /* FIX: timeout de 12s → fallback de embed → tela de erro */
+      loadGuard = setTimeout(() => {
+        if (video.readyState < 2) {
+          if (embedUrl && mountFrame(embedUrl)) { toast('Trocando para player embed'); return; }
+          errorScreen();
+        }
+      }, LOAD_TIMEOUT);
+      video.addEventListener('loadeddata', () => clearTimeout(loadGuard), { once: true });
+      video.addEventListener('playing', () => clearTimeout(loadGuard), { once: true });
 
       video.addEventListener('error', () => {
+        clearTimeout(loadGuard);
         if (tries++ < 2) { toast('Link expirou, resolvendo de novo'); load(); return; }
-        if (embedUrl && mountFrame(embedUrl)) toast('Trocando para player embed');
-        else $('#stage').innerHTML = '<p class="empty">Não foi possível reproduzir este stream.</p>';
+        if (embedUrl && mountFrame(embedUrl)) { toast('Trocando para player embed'); return; }
+        errorScreen();
       });
 
       if (window.Plyr) {
@@ -1112,11 +1277,22 @@ if (document.body.dataset.page === 'player') {
           speed: { selected: 1, options: [0.5, 1, 1.25, 1.5, 2] },
           storage: { enabled: true, key: 'ma-plyr' }
         });
-        video.addEventListener('timeupdate', saveProgress);
-        if (autoNextPref !== 'off') video.addEventListener('ended', next);
       } else {
         video.controls = true;
-        if (autoNextPref !== 'off') video.addEventListener('ended', next);
+      }
+
+      /* FIX: timeupdate dispara progresso e o card de próximo ep nos últimos 15s */
+      video.addEventListener('timeupdate', () => {
+        saveProgress();
+        const d = video.duration;
+        if (!d || autoNextPref === 'off' || nextShown) return;
+        if (d - video.currentTime <= 15) {
+          const n = nextEpisode();
+          if (n) { nextShown = true; showNextCard(n); }
+        }
+      });
+      if (autoNextPref !== 'off') {
+        video.addEventListener('ended', () => { clearNextCard(); next(); });
       }
 
       $('#btn-10s')?.addEventListener('click', () => { video.currentTime = Math.max(0, video.currentTime - 10); });
@@ -1145,6 +1321,7 @@ if (document.body.dataset.page === 'player') {
         b.onclick = () => {
           const rawSrc = s.proxyUrl ? `${API}${s.proxyUrl}` : s.url;
           const srcUrl = unwrapOEmbed(rawSrc) || rawSrc;
+          clearTimeout(loadGuard);
           if (plyr) { plyr.source = { type: 'video', sources: [{ src: srcUrl, type: s.mime || 'video/mp4' }] }; plyr.play(); }
           else { video.src = srcUrl; video.play(); }
           $$('#qbox .tag').forEach(x => x.classList.toggle('on', x === b));
@@ -1165,7 +1342,7 @@ if (document.body.dataset.page === 'player') {
       store.set('continue', [{ slug, source, title: info?.title || slug, cover: info?.cover, ep },
         ...store.get('continue', []).filter(x => x.slug !== slug)].slice(0, 12));
     } catch {
-      $('#stage').innerHTML = '<p class="empty">Episódio indisponível.</p>';
+      errorScreen();
     }
   }
 

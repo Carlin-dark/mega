@@ -1,6 +1,7 @@
 package com.megaanime.app;
 
 import android.annotation.SuppressLint;
+import android.content.pm.ActivityInfo;
 import android.content.pm.PackageManager;
 import android.os.Bundle;
 import android.view.View;
@@ -15,6 +16,11 @@ import android.widget.Toast;
 import androidx.appcompat.app.AppCompatActivity;
 
 public class MainActivity extends AppCompatActivity {
+
+    /* FIX: UA de Chrome Android compatível com googlevideo.com e blogger.com */
+    private static final String UA =
+            "Mozilla/5.0 (Linux; Android 13; Pixel 7) AppleWebKit/537.36 (KHTML, like Gecko) " +
+            "Chrome/124.0.0.0 Mobile Safari/537.36";
 
     private WebView web;
     private FrameLayout root;
@@ -47,6 +53,10 @@ public class MainActivity extends AppCompatActivity {
         s.setAllowContentAccess(true);
         s.setJavaScriptCanOpenWindowsAutomatically(true);
         s.setSupportMultipleWindows(false);
+        /* FIX: UA fixo e sem zoom acidental */
+        s.setUserAgentString(UA);
+        s.setSupportZoom(false);
+        s.setBuiltInZoomControls(false);
 
         web.setWebViewClient(new WebViewClient() {
             @Override
@@ -79,6 +89,8 @@ public class MainActivity extends AppCompatActivity {
                         ViewGroup.LayoutParams.MATCH_PARENT));
                 web.setVisibility(View.GONE);
                 getWindow().addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON);
+                /* FIX: libera a rotação para o fullscreen poder girar */
+                setRequestedOrientation(ActivityInfo.SCREEN_ORIENTATION_UNSPECIFIED);
                 setImmersive(true);
             }
 
@@ -89,6 +101,8 @@ public class MainActivity extends AppCompatActivity {
                 customView = null;
                 web.setVisibility(View.VISIBLE);
                 getWindow().clearFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON);
+                /* FIX: volta ao retrato ao sair do fullscreen */
+                setRequestedOrientation(ActivityInfo.SCREEN_ORIENTATION_PORTRAIT);
                 setImmersive(false);
                 if (customCallback != null) { customCallback.onCustomViewHidden(); customCallback = null; }
             }
