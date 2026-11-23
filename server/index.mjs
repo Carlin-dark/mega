@@ -382,10 +382,12 @@ app.get(['/api/streams/:slug/:ep', '/api/streams/:source/:slug/:ep'], async (req
 
     const out = await budget(Promise.resolve(src.streams(targetSlug, resolvedEpId, audio, season)), 16000);
 
-    const pageCandidates = [...new Set([
-      out.pageUrl,
-      ...episodeCandidates(src.meta.base, targetSlug, season, epNum),
-    ].filter(Boolean))].slice(0, 2);
+    /* FIX: fontes com player em query string (?ep=&t=) montam a URL de outra forma */
+    const watchCandidates = src.meta.watchKind === 'query'
+      ? [`${src.meta.base}/anime/${targetSlug}?ep=${epNum}&t=${season}${audio === 'dub' ? '&audio=dub' : ''}`]
+      : episodeCandidates(src.meta.base, targetSlug, season, epNum);
+
+    const pageCandidates = [...new Set([out.pageUrl, ...watchCandidates].filter(Boolean))].slice(0, 2);
 
     const freshBlogger = [];
     const freshDirect = [];
