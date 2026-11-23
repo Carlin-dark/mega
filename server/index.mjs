@@ -45,18 +45,6 @@ const dedupe = (list) => {
 
 const budget = (p, ms) => Promise.race([p, new Promise((_, rej) => setTimeout(() => rej(new Error('timeout')), ms))]);
 
-async function firstOf(req, run, ms = 12000) {
-  const first = pick(req);
-  const order = [first, ...listSources().map((s) => getSource(s.id)).filter((s) => s.meta.id !== first.meta.id)];
-  for (const src of order) {
-    try {
-      const out = await budget(Promise.resolve(run(src)), ms);
-      if (out) return { source: src.meta.id, out };
-    } catch {}
-  }
-  return null;
-}
-
 app.get('/api/sources', (_req, res) => res.json({ default: DEFAULT_SOURCE, sources: listSources() }));
 
 app.get(['/api/home', '/api/home/:source'], async (req, res) => {
@@ -102,8 +90,7 @@ app.get(['/api/search', '/api/search/:source'], async (req, res) => {
     } catch {}
   }));
 
-  const results = dedupe(out);
-  ok(res, { query: q, results }, 30);
+  ok(res, { query: q, results: dedupe(out) }, 30);
 });
 
 app.get(['/api/anime/:slug', '/api/anime/:source/:slug'], async (req, res) => {
@@ -193,7 +180,7 @@ app.get('/api/seasons/:year/:season', async (req, res) => {
   const year = Number(req.params.year);
   const season = req.params.season;
   try {
-    const d = await budget(jikan.season(year, season), 8000);
+    const d = await budget(jikan.season(year, season), 800);
     ok(res, d, 900);
   } catch {
     ok(res, { year, season, items: [] }, 60);

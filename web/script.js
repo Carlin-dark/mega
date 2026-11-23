@@ -1,15 +1,24 @@
-/* Mega Anime — front */
-const API = (window.API_BASE || location.origin).replace(/\/$/, '');
+/* Mega Anime — front completo */
+const API = (window.API_BASE || 'https://mega-la8q.onrender.com').replace(/\/+$/, '');
 const $ = (s, r = document) => r.querySelector(s);
 const $$ = (s, r = document) => [...r.querySelectorAll(s)];
 const esc = (s = '') => String(s).replace(/[&<>"]/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]));
 const img = (u) => (u ? `${API}/img?u=${encodeURIComponent(u)}` : '');
+
+const DEFAULT_SOURCES = [
+  { id: 'animesonline', name: 'AnimesOnline' },
+  { id: 'animefire', name: 'AnimeFire' },
+  { id: 'betteranime', name: 'BetterAnime' },
+  { id: 'animesroll', name: 'AnimesRoll' },
+  { id: 'anitube', name: 'AniTube' }
+];
 
 const store = {
   get(k, d = null) { try { return JSON.parse(localStorage.getItem('ma:' + k)) ?? d; } catch { return d; } },
   set(k, v) { try { localStorage.setItem('ma:' + k, JSON.stringify(v)); } catch {} },
   del(k) { localStorage.removeItem('ma:' + k); }
 };
+
 const toast = (t) => {
   const el = $('#toast'); if (!el) return;
   el.textContent = t; el.classList.add('on');
@@ -25,6 +34,19 @@ const ICONS = {
   site: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" style="width:13px;height:13px;margin-right:4px"><path d="M14 3h7v7"/><path d="M10 14 21 3"/><path d="M21 14v6a1 1 0 0 1-1 1H4a1 1 0 0 1-1-1V4a1 1 0 0 1 1-1h6"/></svg>'
 };
 
+/* Bloqueia qualquer URL que seja página de detalhes do site (/anime/slug) em vez de player/vídeo */
+function isSiteAnimePage(u = '') {
+  if (!u) return true;
+  try {
+    const parsed = new URL(u);
+    const isAnimePath = /\/anime\/[^/]+\/?$/i.test(parsed.pathname) && !parsed.searchParams.get('ep');
+    const isAnimesOnline = /animesonline/i.test(parsed.hostname) && /\/anime\//i.test(parsed.pathname) && !/video\.g|videoplayback|\.mp4|\.m3u8/i.test(u);
+    return isAnimePath || isAnimesOnline;
+  } catch {
+    return /\/anime\/[^/?#]+$/i.test(String(u));
+  }
+}
+
 /* ---------- normalizadores ---------- */
 const asList = (d) => {
   if (Array.isArray(d)) return d;
@@ -35,6 +57,7 @@ const asList = (d) => {
   if (Array.isArray(d.sections)) return d.sections.flatMap(s => s.items || []);
   return [];
 };
+
 const cover = (a) => a.cover || a.poster || a.banner || null;
 
 function normAnime(a) {
@@ -44,12 +67,18 @@ function normAnime(a) {
     (s.episodes || []).forEach((e, idx) => {
       const list = Array.isArray(e.audio) ? e.audio : [e.audio || 'leg'];
       const n = e.number || idx + 1;
-      list.forEach((au) => eps.push({ number: n, audio: au, duration: e.duration || null }));
+      list.forEach((au) => eps.push({
+        number: n,
+        audio: au,
+        id: e.ids?.[au] ?? e.id ?? n,
+        duration: e.duration || null
+      }));
     });
     return { season: num, title: s.title || `Temporada ${num}`, episodes: eps };
   });
   const flat = seasons.flatMap(s => s.episodes);
   return {
+    source: a?.source || store.get('source', 'animesonline'),
     slug: a?.slug || '',
     title: a?.title || 'Sem título',
     cover: cover(a || {}),
@@ -64,12 +93,21 @@ function normAnime(a) {
   };
 }
 
+async function fetchSources() {
+  try {
+    const r = await fetch(`${API}/api/sources`);
+    const d = await r.json();
+    if (Array.isArray(d?.sources) && d.sources.length) return d.sources;
+  } catch {}
+  return DEFAULT_SOURCES;
+}
+
 /* ---------- favoritos ---------- */
 const favs = () => store.get('favs', []);
 const isFav = (slug) => favs().some(x => x.slug === slug);
 function setFav(a, on) {
   const l = favs().filter(x => x.slug !== a.slug);
-  if (on) l.unshift({ slug: a.slug, title: a.title, cover: cover(a) });
+  if (on) l.unshift({ slug: a.slug, source: a.source || store.get('source', 'animesonline'), title: a.title, cover: cover(a) });
   store.set('favs', l);
   return on;
 }
@@ -77,6 +115,10 @@ const toggleFav = (a) => setFav(a, !isFav(a.slug));
 
 /* ---------- download ---------- */
 function saveFile(url, name) {
+  if (!url || isSiteAnimePage(url)) {
+    toast('Link direto de vídeo não disponível para download');
+    return;
+  }
   if (window.Android && window.Android.download) {
     window.Android.download(url, name, 'video/mp4', 'https://www.blogger.com/');
     toast('Baixando em Downloads/MegaAnime');
@@ -88,15 +130,16 @@ function saveFile(url, name) {
   toast('Download iniciado');
 }
 
-function card(a, ep) {
+function card(a, ep, srcOverride) {
+  const src = a.source || srcOverride || store.get('source', 'animesonline');
   const el = document.createElement('a');
   el.className = 'card';
-  el.href = `detail.html?slug=${encodeURIComponent(a.slug)}`;
+  el.href = `detail.html?source=${encodeURIComponent(src)}&slug=${encodeURIComponent(a.slug)}`;
   const c = cover(a);
   el.innerHTML = `${ep ? `<span class="ep">EP ${esc(ep)}</span>` : ''}
     ${c ? `<img loading="lazy" src="${img(c)}" alt="${esc(a.title)}">` : '<div style="aspect-ratio:2/3;background:#1b1b22"></div>'}
     <div class="pl"><span>${ICONS.play}</span></div>
-    <div class="cap"><b>${esc(a.title)}</b><small>${esc(a.type || a.year || '')}</small></div>`;
+    <div class="cap"><b>${esc(a.title)}</b><small>${esc([a.type, a.year].filter(Boolean).join(' • ') || src)}</small></div>`;
   return el;
 }
 
@@ -126,6 +169,8 @@ const failBox = (box, msg, retry) => {
 /* ================= HOME ================= */
 if (document.body.dataset.page === 'home') {
   let heroPool = [], hi = 0, page = 1, busy = false, done = false;
+  let currentSource = store.get('source', 'animesonline');
+  let availableSources = DEFAULT_SOURCES;
 
   const paintHero = () => {
     const a = heroPool[hi % heroPool.length];
@@ -139,7 +184,7 @@ if (document.body.dataset.page === 'home') {
         <h2>${esc(a.title)}</h2>
         <p>${esc(a.synopsis || 'Assista agora, legendado ou dublado.')}</p>
         <div class="row">
-          <a class="btn" href="detail.html?slug=${encodeURIComponent(a.slug)}">${ICONS.play} Play</a>
+          <a class="btn" href="detail.html?source=${encodeURIComponent(currentSource)}&slug=${encodeURIComponent(a.slug)}">${ICONS.play} Play</a>
           <button class="btn circle" id="hero-fav" aria-label="Salvar"></button>
           <span class="pager">${(hi % heroPool.length) + 1} / ${heroPool.length}</span>
         </div>
@@ -151,7 +196,7 @@ if (document.body.dataset.page === 'home') {
       ? '<svg viewBox="0 0 24 24" fill="currentColor" stroke="currentColor" stroke-width="2"><path d="M6 3h12a1 1 0 0 1 1 1v17l-7-4-7 4V4a1 1 0 0 1 1-1z"/></svg>'
       : '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M6 3h12a1 1 0 0 1 1 1v17l-7-4-7 4V4a1 1 0 0 1 1-1z"/></svg>';
     fb.onclick = () => {
-      const on = toggleFav(a);
+      const on = toggleFav({ ...a, source: currentSource });
       paintHero();
       toast(on ? 'Salvo na lista' : 'Removido');
     };
@@ -178,12 +223,33 @@ if (document.body.dataset.page === 'home') {
     el.addEventListener('pointerleave', startHero);
   }
 
+  function ensureSourceSelector() {
+    if ($('#home-source-select') || !$('#view-home')) return;
+    const bar = document.createElement('div');
+    bar.className = 'ctrl';
+    bar.style.padding = '12px 14px 0';
+    bar.innerHTML = `<select id="home-source-select" class="tag">${availableSources.map(s =>
+      `<option value="${esc(s.id)}" ${s.id === currentSource ? 'selected' : ''}>Fonte: ${esc(s.name)}</option>`
+    ).join('')}</select>`;
+    $('#view-home').prepend(bar);
+    $('#home-source-select').onchange = (e) => {
+      currentSource = e.target.value;
+      store.set('source', currentSource);
+      page = 1; done = false; busy = false;
+      if ($('#catalog')) $('#catalog').innerHTML = '';
+      loadHome();
+    };
+  }
+
   async function loadHome() {
+    availableSources = await fetchSources();
+    ensureSourceSelector();
+
     $('#latest').innerHTML = '<p class="empty">Carregando…</p>';
     $('#top').innerHTML = '';
     $('#added').innerHTML = '';
     try {
-      const list = asList(await json(`${API}/api/home`));
+      const list = asList(await json(`${API}/api/home?source=${encodeURIComponent(currentSource)}`));
       const uniq = [...new Map(list.map(a => [a.slug, a])).values()];
       if (!uniq.length) throw new Error('vazio');
 
@@ -193,21 +259,21 @@ if (document.body.dataset.page === 'home') {
       if (!$('#hero').dataset.wired) { $('#hero').dataset.wired = '1'; heroSwipe(); }
 
       $('#latest').innerHTML = '';
-      uniq.slice(0, 20).forEach(a => $('#latest').appendChild(card(a)));
-      uniq.slice(20, 32).forEach(a => $('#top').appendChild(card(a)));
-      if (!$('#top').children.length) uniq.slice(0, 12).forEach(a => $('#top').appendChild(card(a)));
+      uniq.slice(0, 20).forEach(a => $('#latest').appendChild(card(a, null, currentSource)));
+      uniq.slice(20, 32).forEach(a => $('#top').appendChild(card(a, null, currentSource)));
+      if (!$('#top').children.length) uniq.slice(0, 12).forEach(a => $('#top').appendChild(card(a, null, currentSource)));
 
-      const cat = asList(await json(`${API}/api/catalog?page=1`));
-      (cat.length ? cat : uniq).forEach(a => $('#added').appendChild(card(a)));
+      const cat = asList(await json(`${API}/api/catalog?page=1&source=${encodeURIComponent(currentSource)}`));
+      (cat.length ? cat : uniq).forEach(a => $('#added').appendChild(card(a, null, currentSource)));
 
       const cont = store.get('continue', []);
       if (cont.length) {
         $('#continue-wrap').classList.remove('hide');
         $('#continue').innerHTML = '';
-        cont.slice(0, 12).forEach(c => $('#continue').appendChild(card(c, c.ep)));
+        cont.slice(0, 12).forEach(c => $('#continue').appendChild(card(c, c.ep, c.source || currentSource)));
       }
     } catch {
-      failBox($('#latest'), 'Falha ao carregar. Verifique se o servidor está rodando e tente de novo.', loadHome);
+      failBox($('#latest'), 'Falha ao carregar. Tente trocar a fonte no topo ou tentar de novo.', loadHome);
     }
   }
   loadHome();
@@ -216,9 +282,9 @@ if (document.body.dataset.page === 'home') {
     if (busy || done) return;
     busy = true;
     try {
-      const list = asList(await json(`${API}/api/catalog?page=${++page}`));
+      const list = asList(await json(`${API}/api/catalog?page=${++page}&source=${encodeURIComponent(currentSource)}`));
       if (!list.length) done = true;
-      else list.forEach(a => $('#catalog').appendChild(card(a)));
+      else list.forEach(a => $('#catalog').appendChild(card(a, null, currentSource)));
     } catch {}
     busy = false;
   };
@@ -249,12 +315,12 @@ if (document.body.dataset.page === 'home') {
     if (!q) return;
     show('search');
     const box = $('#results');
-    box.innerHTML = '<p class="empty">Buscando…</p>';
+    box.innerHTML = '<p class="empty">Buscando em todas as fontes…</p>';
     try {
       const list = asList(await json(`${API}/api/search?q=${encodeURIComponent(q)}`));
       box.innerHTML = '';
       if (!list.length) return failBox(box, `Nada encontrado para "${q}".`);
-      list.forEach(a => box.appendChild(card(a)));
+      list.forEach(a => box.appendChild(card(a, null, a.source || currentSource)));
     } catch {
       failBox(box, 'Erro na busca.', () => $('#searchbar').requestSubmit());
     }
@@ -264,7 +330,7 @@ if (document.body.dataset.page === 'home') {
     const l = favs();
     $('#list').innerHTML = l.length ? '' : '<p class="empty">Sua lista está vazia. Abra um anime e toque no marcador.</p>';
     l.forEach(a => {
-      const el = card(a);
+      const el = card(a, null, a.source || currentSource);
       const b = document.createElement('button');
       b.className = 'card-x';
       b.innerHTML = ICONS.x;
@@ -286,7 +352,6 @@ if (document.body.dataset.page === 'home') {
     });
   }
 
-  /* ---------- temporadas ---------- */
   let seasonsReady = false;
   function initSeasons() {
     const sel = $('#s-year');
@@ -322,12 +387,12 @@ if (document.body.dataset.page === 'home') {
           <div class="cap"><b>${esc(m.title)}</b><small>${esc(m.type || m.day || '')}</small></div>`;
         el.onclick = async (e) => {
           e.preventDefault();
-          if (m.slug) return location.href = `detail.html?slug=${encodeURIComponent(m.slug)}`;
+          if (m.slug) return location.href = `detail.html?source=${encodeURIComponent(currentSource)}&slug=${encodeURIComponent(m.slug)}`;
           toast('Procurando no catálogo…');
           try {
             const r = asList(await json(`${API}/api/search?q=${encodeURIComponent(m.title)}`));
-            if (r[0]) location.href = `detail.html?slug=${encodeURIComponent(r[0].slug)}`;
-            else toast('Não disponível no site');
+            if (r[0]) location.href = `detail.html?source=${encodeURIComponent(r[0].source || currentSource)}&slug=${encodeURIComponent(r[0].slug)}`;
+            else toast('Não disponível nas fontes');
           } catch { toast('Falha na busca'); }
         };
         box.appendChild(el);
@@ -350,14 +415,70 @@ if (document.body.dataset.page === 'home') {
 
 /* ================= DETALHE ================= */
 if (document.body.dataset.page === 'detail') {
-  const slug = new URLSearchParams(location.search).get('slug');
-  let data = null, season = 1, audio = store.get('audio', 'leg');
+  const params = new URLSearchParams(location.search);
+  let source = params.get('source') || store.get('source', 'animesonline');
+  let slug = params.get('slug');
+  let data = null, season = 1, audio = store.get('audio', 'leg'), sourcesList = DEFAULT_SOURCES;
 
   $('#back').onclick = () => history.length > 1 ? history.back() : location.href = 'index.html';
 
-  (async () => {
+  async function findBestSlugInSource(srcId, titleText) {
+    if (!titleText) return null;
     try {
-      data = normAnime(await json(`${API}/api/anime/${encodeURIComponent(slug)}`));
+      const list = asList(await json(`${API}/api/search?q=${encodeURIComponent(titleText)}&source=${encodeURIComponent(srcId)}`));
+      if (!list.length) return null;
+      const norm = s => String(s || '').toLowerCase().replace(/[^a-z0-9]+/g, ' ').trim();
+      const target = norm(titleText);
+      const exact = list.find(i => norm(i.title) === target || norm(i.title).includes(target) || target.includes(norm(i.title)));
+      return (exact || list[0]).slug;
+    } catch {
+      return null;
+    }
+  }
+
+  function renderSourceBar(currentTitle) {
+    let bar = $('#detail-source-bar');
+    if (!bar) {
+      bar = document.createElement('div');
+      bar.id = 'detail-source-bar';
+      bar.className = 'ctrl';
+      bar.style.padding = '10px 14px 4px';
+      const anchor = $('.actions') || $('.dhead');
+      anchor?.insertAdjacentElement('beforebegin', bar);
+    }
+    bar.innerHTML = sourcesList.map(s =>
+      `<button type="button" class="tag ${s.id === source ? 'on' : ''}" data-src="${esc(s.id)}">${esc(s.name)}</button>`
+    ).join('');
+
+    bar.onclick = async (ev) => {
+      const btn = ev.target.closest('[data-src]');
+      if (!btn || btn.dataset.src === source) return;
+      const nextSrc = btn.dataset.src;
+      source = nextSrc;
+      store.set('source', source);
+      toast(`Buscando em ${nextSrc}…`);
+
+      let res = await json(`${API}/api/anime/${encodeURIComponent(slug)}?source=${encodeURIComponent(source)}`).catch(() => null);
+      if ((!res || res.error || !(res.seasons || []).length) && (currentTitle || data?.title)) {
+        const altSlug = await findBestSlugInSource(source, currentTitle || data?.title);
+        if (altSlug) {
+          slug = altSlug;
+          res = await json(`${API}/api/anime/${encodeURIComponent(slug)}?source=${encodeURIComponent(source)}`).catch(() => null);
+        }
+      }
+      const u = new URL(location.href);
+      u.searchParams.set('source', source);
+      u.searchParams.set('slug', slug);
+      history.replaceState(null, '', u.toString());
+      await loadDetail(res);
+    };
+  }
+
+  async function loadDetail(preloaded) {
+    sourcesList = await fetchSources();
+    try {
+      const raw = preloaded || await json(`${API}/api/anime/${encodeURIComponent(slug)}?source=${encodeURIComponent(source)}`);
+      data = normAnime({ ...raw, source });
       document.title = data.title;
       $('#title').textContent = data.title;
       if (data.cover) {
@@ -375,21 +496,22 @@ if (document.body.dataset.page === 'detail') {
         <span class="red">HD</span>
         <span>${data.episodeCount} eps</span>`;
 
+      renderSourceBar(data.title);
       season = data.seasons[0]?.season || 1;
       paintEps();
-      if (isFav(data.slug)) $('#fav').classList.add('on');
+      $('#fav').classList.toggle('on', isFav(data.slug));
 
-      json(`${API}/api/similar/${encodeURIComponent(slug)}`)
+      json(`${API}/api/similar/${encodeURIComponent(slug)}?source=${encodeURIComponent(source)}`)
         .then(r => {
           const list = asList(r);
           const g = $('#tab-rel .grid');
           g.innerHTML = '';
           if (!list.length) return g.innerHTML = '<p class="empty">Sem semelhantes.</p>';
-          list.forEach(a => g.appendChild(card(a)));
+          list.forEach(a => g.appendChild(card(a, null, source)));
         })
         .catch(() => { $('#tab-rel .grid').innerHTML = '<p class="empty">Sem semelhantes.</p>'; });
 
-      json(`${API}/api/characters/${encodeURIComponent(slug)}`)
+      json(`${API}/api/characters/${encodeURIComponent(slug)}?source=${encodeURIComponent(source)}`)
         .then(r => {
           const list = asList(r);
           $('#tab-chars').innerHTML = '';
@@ -408,15 +530,18 @@ if (document.body.dataset.page === 'detail') {
     } catch {
       $('#title').textContent = 'Falha ao carregar';
       $('#badges').innerHTML = '<span class="red">erro</span>';
+      renderSourceBar('');
     }
-  })();
+  }
+
+  loadDetail();
 
   function paintEps() {
     const box = $('#tab-eps');
     box.innerHTML = '';
     if (!data) return;
     const se = data.seasons.find(s => s.season === season) || data.seasons[0];
-    if (!se) { box.innerHTML = '<p class="empty">Sem episódios disponíveis.</p>'; return; }
+    if (!se) { box.innerHTML = '<p class="empty">Sem episódios disponíveis neste servidor. Troque a fonte acima.</p>'; return; }
 
     if (data.seasons.length > 1) {
       const tabs = document.createElement('div');
@@ -452,7 +577,7 @@ if (document.body.dataset.page === 'detail') {
     eps.forEach((e, idx) => {
       const n = e.number || idx + 1;
       const a = document.createElement('a');
-      a.href = `player.html?slug=${encodeURIComponent(data.slug)}&ep=${n}&season=${season}&audio=${e.audio}`;
+      a.href = `player.html?source=${encodeURIComponent(source)}&slug=${encodeURIComponent(data.slug)}&ep=${n}&season=${season}&audio=${e.audio}`;
       a.innerHTML = `${n}${e.duration ? `<small>${esc(e.duration)}</small>` : ''}`;
       grid.appendChild(a);
     });
@@ -468,7 +593,7 @@ if (document.body.dataset.page === 'detail') {
     const ep = currentEp();
     if (!ep) return toast('Sem episódios');
     const n = ep.number || 1;
-    location.href = `player.html?slug=${encodeURIComponent(data.slug)}&ep=${n}&season=${season}&audio=${ep.audio}`;
+    location.href = `player.html?source=${encodeURIComponent(source)}&slug=${encodeURIComponent(data.slug)}&ep=${n}&season=${season}&audio=${ep.audio}`;
   };
 
   $('#dls').onclick = async () => {
@@ -477,10 +602,10 @@ if (document.body.dataset.page === 'detail') {
     toast('Preparando download…');
     try {
       const n = ep.number || 1;
-      const d = await json(`${API}/api/streams/${encodeURIComponent(slug)}/${n}?season=${season}&audio=${ep.audio}`);
-      const list = d.streams || d.sources || [];
+      const d = await json(`${API}/api/streams/${encodeURIComponent(slug)}/${n}?source=${encodeURIComponent(source)}&season=${season}&audio=${ep.audio}`);
+      const list = (d.streams || d.sources || []).filter(s => s.url && !isSiteAnimePage(s.url));
       const best = list[list.length - 1];
-      if (!best) return toast('Sem arquivo para baixar');
+      if (!best) return toast('Sem arquivo direto para baixar');
       const name = `${slug}-T${season}E${n}-${best.quality}.mp4`.replace(/\s+/g, '_');
       saveFile(best.url, name);
       store.set('dls', [...store.get('dls', []), { title: data.title, ep: n, quality: best.quality, url: best.url }].slice(-40));
@@ -497,7 +622,7 @@ if (document.body.dataset.page === 'detail') {
   $('#like').onclick = () => { $('#like').classList.toggle('on'); toast('Curtido'); };
 
   $('#share').onclick = async () => {
-    const url = `https://animesonline.blue/anime/${slug}`;
+    const url = location.href;
     try { await navigator.share({ title: data?.title || slug, url }); }
     catch { try { await navigator.clipboard.writeText(url); toast('Link copiado'); } catch { toast(url); } }
   };
@@ -518,27 +643,61 @@ if (document.body.dataset.page === 'detail') {
 /* ================= PLAYER ================= */
 if (document.body.dataset.page === 'player') {
   const p = new URLSearchParams(location.search);
-  const slug = p.get('slug');
+  let source = p.get('source') || store.get('source', 'animesonline');
+  let slug = p.get('slug');
   const season = +(p.get('season') || 1);
   let ep = +(p.get('ep') || 1);
   let audio = p.get('audio') === 'dub' ? 'dub' : store.get('audio', 'leg');
   let server = store.get('srv', 'native');
-  let info = null, plyr = null, tries = 0;
+  let info = null, plyr = null, tries = 0, sourcesList = DEFAULT_SOURCES;
 
   $('#back').onclick = () => history.length > 1 ? history.back() : location.href = 'index.html';
 
-  (async () => {
+  function renderPlayerSourceBar() {
+    if ($('#player-source-bar') || !$('#ctrl')) return;
+    const bar = document.createElement('div');
+    bar.id = 'player-source-bar';
+    bar.className = 'ctrl';
+    bar.style.padding = '0 14px 10px';
+    bar.innerHTML = sourcesList.map(s =>
+      `<button type="button" class="tag ${s.id === source ? 'on' : ''}" data-psrc="${esc(s.id)}">${esc(s.name)}</button>`
+    ).join('');
+    $('#ctrl').insertAdjacentElement('afterend', bar);
+
+    bar.onclick = async (ev) => {
+      const btn = ev.target.closest('[data-psrc]');
+      if (!btn || btn.dataset.psrc === source) return;
+      source = btn.dataset.psrc;
+      store.set('source', source);
+      [...bar.children].forEach(x => x.classList.toggle('on', x === btn));
+      toast(`Trocando para ${source}…`);
+      tries = 0;
+      plyr?.destroy();
+      await loadInfo();
+      await load();
+    };
+  }
+
+  async function loadInfo() {
     try {
-      info = normAnime(await json(`${API}/api/anime/${encodeURIComponent(slug)}`));
+      info = normAnime(await json(`${API}/api/anime/${encodeURIComponent(slug)}?source=${encodeURIComponent(source)}`));
       $('#ptitle').textContent = `${info.title} — EP ${ep}`;
       document.title = $('#ptitle').textContent;
       buildStrip();
-      await load();
-    } catch { $('#stage').innerHTML = '<p class="empty">Falha ao carregar.</p>'; }
+    } catch {
+      $('#stage').innerHTML = '<p class="empty">Falha ao carregar informações do anime.</p>';
+    }
+  }
+
+  (async () => {
+    sourcesList = await fetchSources();
+    renderPlayerSourceBar();
+    await loadInfo();
+    await load();
   })();
 
   function buildStrip() {
-    const se = info?.seasons.find(s => s.season === season);
+    const se = info?.seasons.find(s => s.season === season) || info?.seasons[0];
     $('#strip').innerHTML = '';
     (se?.episodes || []).filter(e => e.audio === audio).forEach((e, idx) => {
       const n = e.number || idx + 1;
@@ -550,7 +709,7 @@ if (document.body.dataset.page === 'player') {
         ev.preventDefault();
         ep = n;
         tries = 0;
-        $('#ptitle').textContent = `${info.title} — EP ${ep}`;
+        $('#ptitle').textContent = `${info?.title || slug} — EP ${ep}`;
         buildStrip();
         load();
       };
@@ -558,71 +717,60 @@ if (document.body.dataset.page === 'player') {
     });
   }
 
-  function mountFrame(src, siteUrl) {
-    if (!src) return false;
-    $('#stage').innerHTML = `<iframe src="${esc(src)}" allow="autoplay;fullscreen;encrypted-media" allowfullscreen referrerpolicy="origin"></iframe>`;
+  /* Só monta iframe se for embed de vídeo/player real e NUNCA página /anime/... do site */
+  function mountFrame(src) {
+    if (!src || isSiteAnimePage(src)) return false;
+    $('#stage').innerHTML = `<iframe src="${esc(src)}" allow="autoplay;fullscreen;encrypted-media;picture-in-picture" allowfullscreen referrerpolicy="no-referrer-when-downgrade"></iframe>`;
     $('#qbox').innerHTML = '';
-    if (siteUrl && siteUrl !== src) {
-      const a = document.createElement('a');
-      a.className = 'tag dl';
-      a.innerHTML = `${ICONS.site}Ver no site`;
-      a.href = siteUrl;
-      a.target = '_blank';
-      a.rel = 'noreferrer';
-      $('#qbox').appendChild(a);
-    }
     const retry = document.createElement('button');
     retry.className = 'tag';
-    retry.textContent = 'Tentar vídeo';
+    retry.textContent = 'Tentar vídeo direto';
     retry.onclick = () => { server = 'native'; store.set('srv', 'native'); tries = 0; load(); };
     $('#qbox').appendChild(retry);
     return true;
   }
 
   async function load() {
-    $('#stage').innerHTML = '<p class="empty">Resolvendo…</p>';
+    $('#stage').innerHTML = '<p class="empty">Resolvendo episódio…</p>';
     $('#qbox').innerHTML = '';
     try {
-      const d = await json(`${API}/api/streams/${encodeURIComponent(slug)}/${ep}?season=${season}&audio=${audio}`);
-      const list = (d.streams || d.sources || []).filter(s => s.url);
-      const blogger = d.iframe && /blogger\.com\/video\.g/.test(d.iframe) ? d.iframe : null;
-      const sitePage = d.site || (d.iframe && d.iframe !== blogger ? d.iframe : null);
+      const d = await json(`${API}/api/streams/${encodeURIComponent(slug)}/${ep}?source=${encodeURIComponent(source)}&season=${season}&audio=${audio}`);
+      const list = (d.streams || d.sources || []).filter(s => s.url && !isSiteAnimePage(s.url));
+      const validIframes = (d.iframes || []).filter(u => u && !isSiteAnimePage(u));
+      const embedUrl = (!isSiteAnimePage(d.iframe) ? d.iframe : null) || validIframes[0] || null;
 
       if (!list.length) {
-        if (mountFrame(blogger, sitePage || blogger)) {
-          store.set('continue', [{ slug, title: info.title, cover: info.cover, ep },
+        if (embedUrl && mountFrame(embedUrl)) {
+          store.set('continue', [{ slug, source, title: info?.title || slug, cover: info?.cover, ep },
             ...store.get('continue', []).filter(x => x.slug !== slug)].slice(0, 12));
           return;
         }
-        if (sitePage) {
-          $('#stage').innerHTML = `<iframe src="${esc(sitePage)}" allow="autoplay;fullscreen" allowfullscreen referrerpolicy="origin"></iframe>`;
-          toast('Sem arquivo direto, abrindo o player do site');
-          return;
-        }
-        throw new Error('sem fonte');
+        $('#stage').innerHTML = '<p class="empty">Episódio sem stream disponível nesta fonte. Troque o servidor acima ou tente outro áudio.</p>';
+        return;
       }
 
-      if (server === 'iframe') {
-        if (mountFrame(blogger || sitePage, sitePage)) return;
+      if (server === 'iframe' && embedUrl) {
+        if (mountFrame(embedUrl)) return;
       }
 
       const best = list[list.length - 1];
+      const bestSrc = best.proxyUrl ? `${API}${best.proxyUrl}` : best.url;
       $('#stage').innerHTML = '<video id="v" playsinline crossorigin></video>';
       const video = $('#v');
-      video.src = best.url;
+      video.src = bestSrc;
       if (info?.cover) video.poster = img(info.cover);
 
       video.addEventListener('error', () => {
         if (tries++ < 2) { toast('Link expirou, resolvendo de novo'); load(); return; }
-        if (mountFrame(blogger, sitePage)) toast('Trocando para o player do site');
-        else $('#stage').innerHTML = '<p class="empty">Não foi possível tocar. Troque o servidor nas opções.</p>';
+        if (embedUrl && mountFrame(embedUrl)) toast('Trocando para player embed');
+        else $('#stage').innerHTML = '<p class="empty">Não foi possível reproduzir este stream. Troque o servidor acima.</p>';
       });
 
       if (window.Plyr) {
         plyr = new Plyr(video, {
           controls: ['play-large', 'play', 'progress', 'current-time', 'duration', 'mute', 'volume', 'settings', 'pip', 'fullscreen'],
           settings: ['quality', 'speed'],
-          quality: { default: +best.itag, options: list.map(s => +s.itag) },
+          quality: { default: +best.itag || 720, options: list.map(s => +s.itag || 720) },
           speed: { selected: 1, options: [0.75, 1, 1.25, 1.5, 2] },
           storage: { enabled: true, key: 'ma-plyr' }
         });
@@ -636,10 +784,11 @@ if (document.body.dataset.page === 'player') {
       list.slice().reverse().forEach(s => {
         const b = document.createElement('button');
         b.className = 'tag';
-        b.textContent = s.quality;
+        b.textContent = s.quality || s.label || 'HD';
         b.onclick = () => {
-          if (plyr) { plyr.source = { type: 'video', sources: [{ src: s.url, type: 'video/mp4' }] }; plyr.play(); }
-          else { video.src = s.url; video.play(); }
+          const srcUrl = s.proxyUrl ? `${API}${s.proxyUrl}` : s.url;
+          if (plyr) { plyr.source = { type: 'video', sources: [{ src: srcUrl, type: s.mime || 'video/mp4' }] }; plyr.play(); }
+          else { video.src = srcUrl; video.play(); }
           $$('#qbox .tag').forEach(x => x.classList.toggle('on', x === b));
         };
         $('#qbox').appendChild(b);
@@ -651,24 +800,14 @@ if (document.body.dataset.page === 'player') {
       dl.innerHTML = `${ICONS.dl}Baixar`;
       dl.onclick = () => {
         saveFile(best.url, `${slug}-T${season}E${ep}-${best.quality}.mp4`.replace(/\s+/g, '_'));
-        store.set('dls', [...store.get('dls', []), { title: info.title, ep, quality: best.quality, url: best.url }].slice(-40));
+        store.set('dls', [...store.get('dls', []), { title: info?.title || slug, ep, quality: best.quality, url: best.url }].slice(-40));
       };
       $('#qbox').appendChild(dl);
 
-      if (sitePage) {
-        const site = document.createElement('a');
-        site.className = 'tag dl';
-        site.innerHTML = `${ICONS.site}Ver no site`;
-        site.href = sitePage;
-        site.target = '_blank';
-        site.rel = 'noreferrer';
-        $('#qbox').appendChild(site);
-      }
-
-      store.set('continue', [{ slug, title: info.title, cover: info.cover, ep },
+      store.set('continue', [{ slug, source, title: info?.title || slug, cover: info?.cover, ep },
         ...store.get('continue', []).filter(x => x.slug !== slug)].slice(0, 12));
     } catch {
-      $('#stage').innerHTML = '<p class="empty">Episódio indisponível. Troque o servidor nas opções ou tente outro episódio.</p>';
+      $('#stage').innerHTML = '<p class="empty">Episódio indisponível neste servidor. Troque a fonte acima.</p>';
     }
   }
 
@@ -679,13 +818,13 @@ if (document.body.dataset.page === 'player') {
   }
 
   function next() {
-    const se = info?.seasons.find(s => s.season === season);
+    const se = info?.seasons.find(s => s.season === season) || info?.seasons[0];
     const list = (se?.episodes || []).filter(e => e.audio === audio);
     const i = list.findIndex(e => (e.number || 0) === ep);
     if (i >= 0 && list[i + 1]) {
       ep = list[i + 1].number || ep + 1;
       tries = 0;
-      $('#ptitle').textContent = `${info.title} — EP ${ep}`;
+      $('#ptitle').textContent = `${info?.title || slug} — EP ${ep}`;
       buildStrip();
       load();
     }
@@ -693,13 +832,13 @@ if (document.body.dataset.page === 'player') {
 
   $('#next').onclick = next;
   $('#prev').onclick = () => {
-    const se = info?.seasons.find(s => s.season === season);
+    const se = info?.seasons.find(s => s.season === season) || info?.seasons[0];
     const list = (se?.episodes || []).filter(e => e.audio === audio);
     const i = list.findIndex(e => (e.number || 0) === ep);
     if (i > 0) {
       ep = list[i - 1].number || ep - 1;
       tries = 0;
-      $('#ptitle').textContent = `${info.title} — EP ${ep}`;
+      $('#ptitle').textContent = `${info?.title || slug} — EP ${ep}`;
       buildStrip();
       load();
     }
@@ -710,7 +849,7 @@ if (document.body.dataset.page === 'player') {
     b.onclick = () => {
       audio = b.dataset.audio;
       store.set('audio', audio);
-      $$('[data-audio]').forEach(x => x.classList.toggle('on', x === b.dataset.audio));
+      $$('[data-audio]').forEach(x => x.classList.toggle('on', x.dataset.audio === audio));
       $('#overlay').classList.remove('on');
       buildStrip();
       load();
