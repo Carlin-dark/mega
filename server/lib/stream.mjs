@@ -9,6 +9,20 @@ const ITAG = {
   37: { quality: '1080p', label: '1080p', mime: 'video/mp4' },
 };
 
+/* FIX: mídias de fundo/decoração da página não são episódio.
+   bg.mp4, background, banner, poster, thumb, trailer, placeholder + assets de tema. */
+const JUNK_RE = /(?:^|[/_\-.])(bg|background|banner|poster|thumb|thumbnail|trailer|placeholder|preview|sprite)(?:[-_.][\w-]+)?\.(?:mp4|webm|m4v|ogv)(?:[?#]|$)/i;
+const ASSET_RE = /(?:\/wp-content\/|\/assets\/|\/static\/|\/tema\/|\/themes\/|\/img\/|\/images\/)[^?#]*\.(?:mp4|webm|m4v)(?:[?#]|$)/i;
+
+export function isJunkMedia(url = '') {
+  const u = String(url || '');
+  if (!u) return true;
+  if (/\/bg\.mp4/i.test(u)) return true;
+  if (JUNK_RE.test(u)) return true;
+  if (ASSET_RE.test(u)) return true;
+  return false;
+}
+
 export function isAnimePageUrl(url = '') {
   try {
     const u = new URL(url);
@@ -22,6 +36,10 @@ export function isAnimePageUrl(url = '') {
 
 export function isBlockedEmbed(url = '') {
   return /googletagmanager|doubleclick|facebook\.net|googlesyndication|adservice|analytics|hotjar|clarity/i.test(url);
+}
+
+export function isBloggerEmbed(url = '') {
+  return /blogger\.com\/video\.g|video\.g\?token=/i.test(url);
 }
 
 export function expiresAtFrom(url = '') {
@@ -109,6 +127,8 @@ export function parseStreamingData(html, referer) {
   const pushFormat = (f) => {
     const norm = normalizeMediaUrl(f.url || f.src, referer);
     if (!norm) return;
+    /* FIX: descarta bg.mp4 e mídias de tema */
+    if (isJunkMedia(norm)) return;
     const mime = String(f.mimeType || f.mime || 'video/mp4').split(';')[0];
     if (!mime.startsWith('video/')) return;
     const itag = Number(f.itag) || Number((norm.match(/[?&]itag=(\d+)/) || [])[1]) || 0;
@@ -161,6 +181,8 @@ export function extractDirectVideosFromText(text = '', base = '') {
     for (const m of String(scanTarget).matchAll(re)) {
       const norm = normalizeMediaUrl(m[0], base);
       if (!norm || isAnimePageUrl(norm)) continue;
+      /* FIX: bg.mp4 do site e assets de tema não entram como episódio */
+      if (isJunkMedia(norm)) continue;
       const isHls = /\.m3u8(\?|$)/i.test(norm);
       const itag = Number((norm.match(/[?&]itag=(\d+)/) || [])[1]) || 0;
       const known = ITAG[itag];
@@ -182,7 +204,7 @@ export function extractDirectVideosFromText(text = '', base = '') {
 async function fetchBloggerPlayer(url, referer) {
   const variants = [url, `${url}${url.includes('?') ? '&' : '?'}hl=pt-BR`];
   const refs = [referer, 'https://www.blogger.com/', 'https://www.blogger.com', undefined];
-  const clean = (u) => u && !isBlockedEmbed(u);
+  const clean = (u) => u && !isBlockedEmbed(u) && !isJunkMedia(u);
 
   for (const v of variants) {
     for (const r of refs) {
@@ -218,7 +240,7 @@ export async function resolvePlayer(rawUrl, referer, depth = 0) {
 
   if (isAnimePageUrl(url)) return [];
 
-  if (/blogger\.com\/video\.g|video\.g\?token=/.test(url)) {
+  if (isBloggerEmbed(url)) {
     return fetchBloggerPlayer(url, referer);
   }
 
@@ -235,6 +257,8 @@ export async function resolvePlayer(rawUrl, referer, depth = 0) {
   }
 
   if (/\.mp4(\?|$)|videoplayback/i.test(url)) {
+    /* FIX: se for bg.mp4, não devolve nada para o caller seguir adiante */
+    if (isJunkMedia(url)) return [];
     const itag = Number((url.match(/[?&]itag=(\d+)/) || [])[1]) || 0;
     const known = ITAG[itag];
     return [{
@@ -265,14 +289,19 @@ export async function resolvePlayer(rawUrl, referer, depth = 0) {
 
 export async function resolveStreams(iframes, referer) {
   const cleanIframes = (iframes || []).filter((u) => u && !isBlockedEmbed(u) && (!isAnimePageUrl(u) || /\/oembed/i.test(u)));
+  /* FIX: blogger primeiro — é o embed que realmente toca quando não há vídeo direto */
+  const ordered = [
+    ...cleanIframes.filter((u) => isBloggerEmbed(u)),
+    ...cleanIframes.filter((u) => !isBloggerEmbed(u)),
+  ];
   const results = await Promise.all(
-    cleanIframes.slice(0, 6).map((u) => resolvePlayer(u, referer).catch(() => []))
+    ordered.slice(0, 6).map((u) => resolvePlayer(u, referer).catch(() => []))
   );
-  const flat = results.flat();
+  const flat = results.flat().filter((s) => s.url && !isJunkMedia(s.url));
   const seen = new Set();
   const order = { '1080p': 4, '720p': 3, '480p': 2, '360p': 1, auto: 0 };
   return flat
-    .filter((s) => s.url && !seen.has(s.url) && seen.add(s.url))
+    .filter((s) => !seen.has(s.url) && seen.add(s.url))
     .sort((a, b) => (order[b.quality] ?? 0) - (order[a.quality] ?? 0));
 }
 

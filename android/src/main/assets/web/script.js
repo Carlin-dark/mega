@@ -5,6 +5,16 @@ const $$ = (s, r = document) => [...r.querySelectorAll(s)];
 const esc = (s = '') => String(s).replace(/[&<>"]/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]));
 const img = (u) => (u ? `${API}/img?u=${encodeURIComponent(u)}` : '');
 
+/* FIX: bg.mp4 / assets de tema não são episódio */
+const JUNK_RE = /(?:^|[/_\-.])(bg|background|banner|poster|thumb|thumbnail|trailer|placeholder|preview|sprite)(?:[-_.][\w-]+)?\.(?:mp4|webm|m4v|ogv)(?:[?#]|$)/i;
+const ASSET_RE = /(?:\/wp-content\/|\/assets\/|\/static\/|\/tema\/|\/themes\/|\/img\/|\/images\/)[^?#]*\.(?:mp4|webm|m4v)(?:[?#]|$)/i;
+const isJunkMedia = (u = '') => {
+  const s = String(u || '');
+  if (!s) return true;
+  return /\/bg\.mp4/i.test(s) || JUNK_RE.test(s) || ASSET_RE.test(s);
+};
+const isBloggerEmbed = (u = '') => /blogger\.com\/video\.g|video\.g\?token=/i.test(String(u || ''));
+
 const DEFAULT_SOURCES = [
   { id: 'animesonline', name: 'Servidor 1' },
   { id: 'animefire', name: 'Servidor 2' },
@@ -41,7 +51,6 @@ async function getPosterFallback(title) {
   const clean = String(title).replace(/\b(dub\w*|leg\w*|temporada\w*|\d+ª?|eps?\.?\s*\d+)\b/gi, '').trim();
   if (posterFallbackCache[clean]) return posterFallbackCache[clean];
 
-  // 1. Try Jikan API (handles Jujutsu Kaisen and others perfectly)
   try {
     const r = await fetch(`https://api.jikan.moe/v4/anime?q=${encodeURIComponent(clean)}&limit=1`);
     const d = await r.json();
@@ -52,7 +61,6 @@ async function getPosterFallback(title) {
     }
   } catch {}
 
-  // 2. Try AniList GraphQL API
   try {
     const query = `
       query ($search: String) {
@@ -234,8 +242,6 @@ async function jsonWithTimeout(url, ms = 5000) {
     throw e;
   }
 }
-/* FIX: cliente esperava 6s enquanto a busca do servidor leva até 14s por fonte.
-   Aumentado para 15s para não abortar antes da resposta do backend. */
 const json = (u) => jsonWithTimeout(u, 15000);
 
 async function fetchSources() {
@@ -326,7 +332,6 @@ if (document.body.dataset.page === 'home') {
     el.addEventListener('pointerleave', startHero);
   }
 
-  /* Fast Cached & Parallel Home Loader */
   async function loadHome() {
     const cachedHome = store.get('cache_home_' + currentSource);
     if (cachedHome && cachedHome.length) {
@@ -420,7 +425,6 @@ if (document.body.dataset.page === 'home') {
     views.forEach(x => $('#view-' + x)?.classList.toggle('hide', x !== v));
     $$('.nav a').forEach(a => a.classList.toggle('on', a.dataset.tab === v));
 
-    // REQUIREMENT 5: Top Header restricted ONLY to Home view
     const isHome = v === 'home';
     $('.top')?.classList.toggle('hide', !isHome);
     $('#searchbar')?.classList.add('hide');
@@ -440,7 +444,6 @@ if (document.body.dataset.page === 'home') {
   $('#btn-search').onclick = () => { $('#searchbar').classList.toggle('hide'); $('#q').focus(); };
   $('#btn-bell').onclick = () => { show('home'); toast('Novos episódios na Home'); };
 
-  /* UNIFIED PARALLEL MULTI-SOURCE SEARCH */
   $('#searchbar').onsubmit = async (e) => {
     e.preventDefault();
     const q = $('#q').value.trim();
@@ -450,7 +453,6 @@ if (document.body.dataset.page === 'home') {
     box.innerHTML = '<p class="empty">Buscando em todas as fontes em paralelo…</p>';
     try {
       const sources = await fetchSources();
-      /* FIX: 15s por fonte (o backend usa budget de 14s) em vez de 4.5s */
       const promises = sources.map(s => jsonWithTimeout(`${API}/api/search?q=${encodeURIComponent(q)}&source=${s.id}`, 15000).catch(() => null));
       const settled = await Promise.allSettled(promises);
       let allResults = [];
@@ -498,7 +500,6 @@ if (document.body.dataset.page === 'home') {
     });
   }
 
-  /* CALENDAR UP TO 2030 WITH UNBLOCKABLE PARALLEL & TIMEOUT FALLBACK */
   let seasonsReady = false;
   let currentSeasonReqId = 0;
 
@@ -509,7 +510,6 @@ if (document.body.dataset.page === 'home') {
         for (let i = 2030; i >= 2000; i--) sel.add(new Option(i, i));
         sel.value = Math.min(2030, new Date().getFullYear());
       }
-      /* FIX: select cru escondido, substituído por modal no tema do site */
       sel.classList.add('hide');
       buildYearPicker(sel);
       sel.onchange = () => { syncYearLabel(sel); loadSeason(); };
@@ -521,7 +521,6 @@ if (document.body.dataset.page === 'home') {
     if (!seasonsReady) { seasonsReady = true; loadSeason(); }
   }
 
-  /* FIX: modal de ano 2030 → 2000 estilizado */
   function buildYearPicker(sel) {
     if ($('#yearpick')) { syncYearLabel(sel); return; }
     const wrap = document.createElement('div');
@@ -608,11 +607,12 @@ if (document.body.dataset.page === 'home') {
 
     try {
       let list = [];
-      /* FIX: 12s (o backend responde em até 8s); antes 4s abortava sempre */
-      const p1 = jsonWithTimeout(`${API}/api/seasons/${y}/${s}`, 12000).catch(() => null);
-      const p2 = jsonWithTimeout(`https://api.jikan.moe/v4/seasons/${y}/${s}`, 12000).then(res => {
-        if (Array.isArray(res?.data)) {
-          return res.data.map(item => ({
+      list = asList(await jsonWithTimeout(`${API}/api/calendar?year=${y}&season=${s}`, 14000).catch(() => null));
+
+      if (!list.length) {
+        const j = await jsonWithTimeout(`https://api.jikan.moe/v4/seasons/${y}/${s}?limit=24&sfw`, 12000).catch(() => null);
+        if (Array.isArray(j?.data)) {
+          list = j.data.map(item => ({
             title: item.title,
             cover: item.images?.jpg?.large_image_url || item.images?.jpg?.image_url,
             score: item.score,
@@ -620,24 +620,12 @@ if (document.body.dataset.page === 'home') {
             year: y
           }));
         }
-        return null;
-      }).catch(() => null);
-
-      const [res1, res2] = await Promise.allSettled([p1, p2]);
-      if (res1.status === 'fulfilled' && res1.value) {
-        list = asList(res1.value);
-      }
-      if ((!list || !list.length) && res2.status === 'fulfilled' && res2.value) {
-        list = res2.value;
       }
 
-      /* FIX: /api/calendar não existe no backend; agora o 3º fallback é o catálogo local */
-      if (!list || !list.length) {
-        try {
-          const homeList = asList(await jsonWithTimeout(`${API}/api/home?source=${encodeURIComponent(currentSource)}`, 9000));
-          list = homeList.filter(a => !a.year || String(a.year) === String(y));
-          if (!list.length) list = homeList;
-        } catch {}
+      if (!list.length) {
+        const homeList = asList(await jsonWithTimeout(`${API}/api/home?source=${encodeURIComponent(currentSource)}`, 9000).catch(() => null));
+        list = homeList.filter(a => !a.year || String(a.year) === String(y));
+        if (!list.length) list = homeList;
       }
 
       if (reqId !== currentSeasonReqId) return;
@@ -656,7 +644,6 @@ if (document.body.dataset.page === 'home') {
     }
   }
 
-  /* PROFILE PREFERENCES SAVING */
   function renderProfile() {
     if ($('#p-stats')) $('#p-stats').textContent = `${favs().length} salvos · ${store.get('dls', []).length} downloads`;
 
@@ -823,7 +810,6 @@ if (document.body.dataset.page === 'detail') {
       paintEps();
       $('#fav').classList.toggle('on', isFav(data.slug));
 
-      /* Animes Semelhantes por gênero */
       try {
         const allSimilar = [];
         for (const s of sourcesList) {
@@ -844,7 +830,6 @@ if (document.body.dataset.page === 'detail') {
         $('#tab-rel .grid').innerHTML = '<p class="empty">Sem semelhantes.</p>';
       }
 
-      /* Personagens via Jikan API */
       try {
         const jikanSearch = await fetch(`https://api.jikan.moe/v4/anime?q=${encodeURIComponent(data.title)}&limit=1`).then(r => r.json());
         const animeMalId = jikanSearch?.data?.[0]?.mal_id;
@@ -949,7 +934,7 @@ if (document.body.dataset.page === 'detail') {
     try {
       const n = ep.number || 1;
       const d = await json(`${API}/api/streams/${encodeURIComponent(slug)}/${n}?source=${encodeURIComponent(source)}&season=${season}&audio=${ep.audio}`);
-      const list = (d.streams || d.sources || []).filter(s => s.url && !isSiteAnimePage(s.url));
+      const list = (d.streams || d.sources || []).filter(s => s.url && !isSiteAnimePage(s.url) && !isJunkMedia(s.url));
       const best = list[list.length - 1];
       if (!best) return toast('Sem arquivo direto para baixar');
       const realUrl = unwrapOEmbed(best.url) || best.url;
@@ -1001,12 +986,13 @@ if (document.body.dataset.page === 'player') {
   const autoFsPref = store.get('auto_fs', 'on');
   let info = null, plyr = null, tries = 0, sourcesList = DEFAULT_SOURCES;
 
-  /* FIX: timeout de carregamento e controle do card de próximo episódio */
   const LOAD_TIMEOUT = 12000;
   let loadGuard = null;
   let nextTimer = null;
   let nextShown = false;
   let lastEmbed = null;
+  let candidates = [];
+  let candIdx = 0;
 
   $('#back').onclick = () => history.length > 1 ? history.back() : location.href = 'index.html';
 
@@ -1057,7 +1043,6 @@ if (document.body.dataset.page === 'player') {
     });
   }
 
-  /* FIX: rótulo do overlay (T1 • Episódio 08 / OVA / Especial / Filme) */
   const epLabel = () => {
     const t = String(info?.type || '').toLowerCase();
     const n = String(ep).padStart(2, '0');
@@ -1069,7 +1054,6 @@ if (document.body.dataset.page === 'player') {
 
   const titleOverlay = () => `<div class="player-title">${esc(epLabel())}</div>`;
 
-  /* FIX: fullscreen centralizado (Android nativo, senão Fullscreen API) */
   function requestFs(el) {
     const target = el || $('#stage');
     try {
@@ -1081,7 +1065,6 @@ if (document.body.dataset.page === 'player') {
     } catch {}
   }
 
-  /* FIX: card de próximo episódio com contagem de 10s */
   function clearNextCard() {
     clearInterval(nextTimer);
     nextTimer = null;
@@ -1120,7 +1103,6 @@ if (document.body.dataset.page === 'player') {
     }, 1000);
   }
 
-  /* FIX: tela de erro com retry e fallback alternativo */
   function errorScreen(msg = 'Erro ao carregar episódio, tente novamente mais tarde.') {
     clearTimeout(loadGuard);
     clearNextCard();
@@ -1131,14 +1113,14 @@ if (document.body.dataset.page === 'player') {
         <button class="btn dark" id="err-embed" type="button">Usar player alternativo</button>
       </div>
     </div>`;
-    $('#err-retry').onclick = () => { tries = 0; load(); };
+    $('#err-retry').onclick = () => { tries = 0; candIdx = 0; load(); };
     $('#err-embed').onclick = () => {
       if (lastEmbed && mountFrame(lastEmbed)) return;
       errorScreen('Nenhum player alternativo disponível para este episódio.');
     };
   }
 
-  /* FIX: iframe com allow/allowfullscreen/referrerpolicy e overlay de título */
+  /* FIX: embed Blogger entra direto no iframe, com título e permissões */
   function mountFrame(src) {
     const realSrc = unwrapOEmbed(src) || src;
     if (!realSrc || isSiteAnimePage(realSrc)) return false;
@@ -1150,7 +1132,7 @@ if (document.body.dataset.page === 'player') {
     const retry = document.createElement('button');
     retry.className = 'tag';
     retry.textContent = 'Tentar vídeo direto';
-    retry.onclick = () => { server = 'native'; store.set('srv', 'native'); tries = 0; load(); };
+    retry.onclick = () => { server = 'native'; store.set('srv', 'native'); tries = 0; candIdx = 0; load(); };
     $('#qbox').appendChild(retry);
     if (autoFsPref !== 'off') requestFs($('#stage'));
     return true;
@@ -1163,9 +1145,11 @@ if (document.body.dataset.page === 'player') {
       try {
         const qs = new URLSearchParams({ source: src, audio, season: String(season), n: String(ep) }).toString();
         const d = await json(`${API}/api/streams/${encodeURIComponent(slug)}/${ep}?${qs}`);
-        const list = (d.streams || d.sources || []).filter(s => (s.url || s.proxyUrl) && !isSiteAnimePage(s.url || s.proxyUrl));
+        /* FIX: descarta bg.mp4 e assets; sem direto válido sobra o iframe */
+        const list = (d.streams || d.sources || []).filter(s => (s.url || s.proxyUrl) && !isSiteAnimePage(s.url || s.proxyUrl) && !isJunkMedia(s.url || s.proxyUrl));
         const validIframes = (d.iframes || []).filter(u => u && !isSiteAnimePage(u));
-        const embedUrl = unwrapOEmbed((!isSiteAnimePage(d.iframe) ? d.iframe : null) || validIframes[0] || null);
+        const blogger = validIframes.find(u => isBloggerEmbed(u));
+        const embedUrl = unwrapOEmbed(blogger || (!isSiteAnimePage(d.iframe) ? d.iframe : null) || validIframes[0] || null);
         if (list.length || embedUrl) {
           source = src;
           store.set('source', source);
@@ -1177,9 +1161,24 @@ if (document.body.dataset.page === 'player') {
     return null;
   }
 
+  function buildCandidates(list) {
+    const out = [];
+    for (const s of list) {
+      const direct = unwrapOEmbed(s.url) || s.url;
+      if (direct && !isSiteAnimePage(direct) && !isJunkMedia(direct)) out.push({ ...s, src: direct, via: 'direto' });
+    }
+    for (const s of list) {
+      if (!s.proxyUrl) continue;
+      out.push({ ...s, src: `${API}${s.proxyUrl}`, via: 'proxy' });
+    }
+    return out;
+  }
+
   async function load() {
     clearTimeout(loadGuard);
     clearNextCard();
+    candidates = [];
+    candIdx = 0;
     $('#stage').innerHTML = '<p class="empty">Resolvendo episódio…</p>';
     $('#qbox').innerHTML = '';
     try {
@@ -1188,9 +1187,10 @@ if (document.body.dataset.page === 'player') {
         errorScreen('Episódio sem stream disponível em nenhum servidor. Tente outro áudio.');
         return;
       }
-      const { d, list, embedUrl } = resolved;
+      const { list, embedUrl } = resolved;
       lastEmbed = embedUrl || null;
 
+      /* FIX: só vai para iframe se pedido, se não houver direto, ou se o direto for lixo */
       if (server === 'iframe' && embedUrl) {
         if (mountFrame(embedUrl)) {
           store.set('continue', [{ slug, source, title: info?.title || slug, cover: info?.cover, ep },
@@ -1199,7 +1199,9 @@ if (document.body.dataset.page === 'player') {
         }
       }
 
-      if (!list.length) {
+      candidates = buildCandidates(list);
+
+      if (!candidates.length) {
         if (embedUrl && mountFrame(embedUrl)) {
           store.set('continue', [{ slug, source, title: info?.title || slug, cover: info?.cover, ep },
             ...store.get('continue', []).filter(x => x.slug !== slug)].slice(0, 12));
@@ -1209,18 +1211,15 @@ if (document.body.dataset.page === 'player') {
         return;
       }
 
-      let best = list[list.length - 1];
+      let ordered = list.slice().sort((a, b) => (Number(b.itag) || 0) - (Number(a.itag) || 0));
       if (qualityPref !== 'auto') {
-        const match = list.find(s => String(s.quality || s.label || '').includes(qualityPref));
-        if (match) best = match;
+        const match = ordered.filter(s => String(s.quality || s.label || '').includes(qualityPref));
+        if (match.length) ordered = [...match, ...ordered.filter(s => !match.includes(s))];
       }
+      candidates = buildCandidates(ordered);
 
-      const rawBestSrc = best.proxyUrl ? `${API}${best.proxyUrl}` : best.url;
-      const bestSrc = unwrapOEmbed(rawBestSrc) || rawBestSrc;
-
-      /* FIX: vídeo direto com autoplay, playsinline, controles e overlay de título */
       $('#stage').innerHTML = `<div class="adv-player-wrapper" style="position:relative;width:100%;height:100%;background:#000">
-        <video id="v" autoplay playsinline controls preload="metadata" crossorigin style="width:100%;height:100%;display:block"></video>
+        <video id="v" autoplay playsinline controls preload="metadata" style="width:100%;height:100%;display:block"></video>
         ${titleOverlay()}
         <div class="adv-overlay" style="position:absolute;inset:0;pointer-events:none;display:flex;flex-direction:column;justify-content:space-between;padding:12px">
           <div style="display:flex;justify-content:space-between;align-items:center;pointer-events:auto">
@@ -1243,37 +1242,37 @@ if (document.body.dataset.page === 'player') {
       </div>`;
 
       const video = $('#v');
-      video.src = bestSrc;
       if (info?.cover) video.poster = info.cover.startsWith('http') ? info.cover : img(info.cover);
 
-      /* FIX: auto_fs na montagem do player, não só no evento play */
+      const tryCandidate = (i) => {
+        clearTimeout(loadGuard);
+        if (i >= candidates.length) {
+          if (lastEmbed && mountFrame(lastEmbed)) { toast('Trocando para player embed'); return; }
+          errorScreen();
+          return;
+        }
+        candIdx = i;
+        video.src = candidates[i].src;
+        video.load();
+        video.play().catch(() => {});
+        loadGuard = setTimeout(() => {
+          if (video.readyState < 2) tryCandidate(i + 1);
+        }, LOAD_TIMEOUT);
+      };
+
+      video.addEventListener('loadeddata', () => clearTimeout(loadGuard));
+      video.addEventListener('playing', () => clearTimeout(loadGuard));
+      video.addEventListener('error', () => { clearTimeout(loadGuard); tryCandidate(candIdx + 1); });
+
       if (autoFsPref !== 'off') {
         requestFs(video);
         video.addEventListener('loadedmetadata', () => { if (video.paused) requestFs(video); }, { once: true });
       }
 
-      /* FIX: timeout de 12s → fallback de embed → tela de erro */
-      loadGuard = setTimeout(() => {
-        if (video.readyState < 2) {
-          if (embedUrl && mountFrame(embedUrl)) { toast('Trocando para player embed'); return; }
-          errorScreen();
-        }
-      }, LOAD_TIMEOUT);
-      video.addEventListener('loadeddata', () => clearTimeout(loadGuard), { once: true });
-      video.addEventListener('playing', () => clearTimeout(loadGuard), { once: true });
-
-      video.addEventListener('error', () => {
-        clearTimeout(loadGuard);
-        if (tries++ < 2) { toast('Link expirou, resolvendo de novo'); load(); return; }
-        if (embedUrl && mountFrame(embedUrl)) { toast('Trocando para player embed'); return; }
-        errorScreen();
-      });
-
       if (window.Plyr) {
         plyr = new Plyr(video, {
           controls: ['play-large', 'play', 'progress', 'current-time', 'duration', 'mute', 'volume', 'settings', 'pip', 'fullscreen'],
           settings: ['quality', 'speed'],
-          quality: { default: +best.itag || 720, options: list.map(s => +s.itag || 720) },
           speed: { selected: 1, options: [0.5, 1, 1.25, 1.5, 2] },
           storage: { enabled: true, key: 'ma-plyr' }
         });
@@ -1281,7 +1280,6 @@ if (document.body.dataset.page === 'player') {
         video.controls = true;
       }
 
-      /* FIX: timeupdate dispara progresso e o card de próximo ep nos últimos 15s */
       video.addEventListener('timeupdate', () => {
         saveProgress();
         const d = video.duration;
@@ -1307,23 +1305,17 @@ if (document.body.dataset.page === 'player') {
         video.onpause = () => ppBtn.textContent = '▶';
       }
 
-      $('#range-vol')?.addEventListener('input', (e) => {
-        video.volume = e.target.value;
-      });
-      $('#range-bright')?.addEventListener('input', (e) => {
-        video.style.filter = `brightness(${e.target.value})`;
-      });
+      $('#range-vol')?.addEventListener('input', (e) => { video.volume = e.target.value; });
+      $('#range-bright')?.addEventListener('input', (e) => { video.style.filter = `brightness(${e.target.value})`; });
 
-      list.slice().reverse().forEach(s => {
+      ordered.slice().reverse().forEach(s => {
         const b = document.createElement('button');
         b.className = 'tag';
-        b.textContent = s.quality || s.label || 'HD';
+        b.textContent = (s.quality || s.label || 'HD') + (isJunkMedia(s.url) ? ' · bg' : '');
         b.onclick = () => {
-          const rawSrc = s.proxyUrl ? `${API}${s.proxyUrl}` : s.url;
-          const srcUrl = unwrapOEmbed(rawSrc) || rawSrc;
-          clearTimeout(loadGuard);
-          if (plyr) { plyr.source = { type: 'video', sources: [{ src: srcUrl, type: s.mime || 'video/mp4' }] }; plyr.play(); }
-          else { video.src = srcUrl; video.play(); }
+          const direct = unwrapOEmbed(s.url) || s.url;
+          const idx = candidates.findIndex(c => c.src === direct);
+          if (idx >= 0) tryCandidate(idx);
           $$('#qbox .tag').forEach(x => x.classList.toggle('on', x === b));
         };
         $('#qbox').appendChild(b);
@@ -1334,10 +1326,13 @@ if (document.body.dataset.page === 'player') {
       dl.className = 'tag dl';
       dl.innerHTML = `${ICONS.dl}Baixar`;
       dl.onclick = () => {
-        saveFile(best.url, `${slug}-T${season}E${ep}-${best.quality}.mp4`.replace(/\s+/g, '_'));
+        const best = ordered.find(s => !isJunkMedia(s.url)) || ordered[0];
+        saveFile(unwrapOEmbed(best.url) || best.url, `${slug}-T${season}E${ep}-${best.quality}.mp4`.replace(/\s+/g, '_'));
         store.set('dls', [...store.get('dls', []), { title: info?.title || slug, ep, quality: best.quality, url: best.url }].slice(-40));
       };
       $('#qbox').appendChild(dl);
+
+      tryCandidate(0);
 
       store.set('continue', [{ slug, source, title: info?.title || slug, cover: info?.cover, ep },
         ...store.get('continue', []).filter(x => x.slug !== slug)].slice(0, 12));

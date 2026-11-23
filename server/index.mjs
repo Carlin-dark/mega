@@ -6,7 +6,7 @@ import { fileURLToPath } from 'node:url';
 
 import { UA_STRING, headersFor, fetchText } from './lib/http.mjs';
 import { getSource, listSources, DEFAULT_SOURCE } from './sources/registry.mjs';
-import { isAnimePageUrl } from './lib/stream.mjs';
+import { isAnimePageUrl, isJunkMedia } from './lib/stream.mjs';
 import * as jikan from './sources/jikan.mjs';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
@@ -97,7 +97,7 @@ app.get(['/api/search', '/api/search/:source'], async (req, res) => {
     : [...new Set([DEFAULT_SOURCE, ...listSources().map((x) => x.id)])].map((id) => getSource(id));
 
   const out = [];
-  // FIX: 10s por fonte; o cliente espera 15s, então nada é abortado no meio
+  // 10s por fonte; o cliente espera 15s, então nada é abortado no meio
   await Promise.all(targets.map(async (t) => {
     try {
       const items = await budget(Promise.resolve(t.search(q)), 10000);
@@ -203,8 +203,9 @@ app.get(['/api/streams/:slug/:ep', '/api/streams/:source/:slug/:ep'], async (req
     } catch {}
 
     const out = await budget(Promise.resolve(src.streams(targetSlug, resolvedEpId, audio, season)), 16000);
+    /* FIX: bg.mp4 e assets de tema não entram como episódio */
     const sources = (out.sources || [])
-      .filter((x) => x.url && !isAnimePageUrl(x.url))
+      .filter((x) => x.url && !isAnimePageUrl(x.url) && !isJunkMedia(x.url))
       .map((x, i) => ({
         url: x.url,
         label: x.label || x.quality || `Fonte ${i + 1}`,
@@ -270,7 +271,7 @@ app.get(['/api/streams/:slug/:ep', '/api/streams/:source/:slug/:ep'], async (req
   }
 });
 
-/* ===== temporadas / calendário (FIX: cache + fallback + /api/calendar) ===== */
+/* ===== temporadas / calendário (FIX: local-first + cache + 3 níveis + /api/calendar) ===== */
 const seasonCache = new Map();
 const seasonKey = (y, s) => `${y}:${s}`;
 
@@ -283,20 +284,29 @@ async function seasonPayload(year, season) {
 
   let items = [];
 
-  // 1) Jikan via módulo
+  // 1) catálogo local filtrado pelo ano (rápido e determinístico)
   try {
-    const d = await budget(jikan.season(year, season), 12000);
-    items = asItems(d);
+    const src = getSource(DEFAULT_SOURCE);
+    const { items: cat } = await budget(Promise.resolve(src.catalog(1)), 10000);
+    items = (cat || [])
+      .filter((a) => !a.year || String(a.year) === String(year))
+      .map((a) => cardOf(a, DEFAULT_SOURCE));
   } catch {}
 
-  // 2) catálogo local filtrado pelo ano
+  // 2) Jikan via módulo
+  if (!items.length) {
+    try {
+      const d = await budget(jikan.season(year, season), 12000);
+      items = asItems(d);
+    } catch {}
+  }
+
+  // 3) catálogo sem filtro de ano (nunca devolve vazio por causa do ano)
   if (!items.length) {
     try {
       const src = getSource(DEFAULT_SOURCE);
-      const { items: cat } = await budget(Promise.resolve(src.catalog(1)), 10000);
-      items = (cat || [])
-        .filter((a) => !a.year || String(a.year) === String(year))
-        .map((a) => cardOf(a, DEFAULT_SOURCE));
+      const { items: cat } = await budget(Promise.resolve(src.catalog(1)), 8000);
+      items = (cat || []).map((a) => cardOf(a, DEFAULT_SOURCE));
     } catch {}
   }
 
@@ -307,7 +317,7 @@ async function seasonPayload(year, season) {
 
 app.get('/api/seasons', async (_req, res) => {
   try {
-    // FIX: o módulo exporta seasonNow, não now
+    // o módulo exporta seasonNow, não now
     const fn = jikan.seasonNow || jikan.now;
     const d = await budget(Promise.resolve(fn()), 12000);
     ok(res, { items: asItems(d) }, 900);
@@ -327,7 +337,7 @@ app.get('/api/seasons/:year/:season', async (req, res) => {
   }
 });
 
-// FIX: rota que o frontend chamava e não existia (404)
+// rota que o frontend chamava e não existia (404)
 app.get('/api/calendar', async (req, res) => {
   const now = new Date();
   const year = Number(req.query.year) || now.getFullYear();
