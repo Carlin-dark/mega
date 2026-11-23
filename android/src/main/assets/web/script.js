@@ -24,8 +24,8 @@ const PLACEHOLDER = 'data:image/svg+xml;utf8,' + encodeURIComponent('<svg xmlns=
 
 /* FIX: 6 servidores — ordem inicial só como fallback; a real vem de /api/sources */
 const DEFAULT_SOURCES = [
-  { id: 'animesonlinecc', name: 'Servidor 1' },
-  { id: 'animesonline', name: 'Servidor 2' },
+  { id: 'animesonline', name: 'Servidor 1' },
+  { id: 'animesonlinecc', name: 'Servidor 2' },
   { id: 'animefire', name: 'Servidor 3' },
   { id: 'betteranime', name: 'Servidor 4' },
   { id: 'animesroll', name: 'Servidor 5' },
