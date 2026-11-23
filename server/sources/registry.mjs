@@ -5,7 +5,7 @@ import animesroll from './animesroll.mjs';
 import anitube from './anitube.mjs';
 
 export const SOURCES = new Map(
-  [animesonline, animefire, betteranime, animesroll, anitube].map(s => [s.meta.id, s])
+  [animesonline, animefire, betteranime, animesroll, anitube].map((s) => [s.meta.id, s])
 );
 
 export const DEFAULT_SOURCE = 'animesonline';
@@ -14,4 +14,4 @@ export function getSource(id) {
   return SOURCES.get(id || DEFAULT_SOURCE) || SOURCES.get(DEFAULT_SOURCE);
 }
 
-export const listSources = () => [...SOURCES.values()].map(s => s.meta);
+export const listSources = () => [...SOURCES.values()].map((s) => s.meta);

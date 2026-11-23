@@ -168,7 +168,7 @@ if (document.body.dataset.page === 'home') {
       const el = card(a);
       const b = document.createElement('button');
       b.className = 'card-x';
-      b.textContent = '✕';
+      b.innerHTML = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round"><path d="M18 6 6 18M6 6l12 12"/></svg>';
       b.onclick = (e) => { e.preventDefault(); setFav(a, false); renderList(); toast('Removido'); };
       el.appendChild(b);
       $('#list').appendChild(el);
