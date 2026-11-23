@@ -1,15 +1,24 @@
-/* Mega Anime — front */
-const API = (window.API_BASE || location.origin).replace(/\/$/, '');
+/* Mega Anime — Refactored & Polished with Jikan & AniList Poster Fallback & Automatic Server Resolution */
+const API = (window.API_BASE || 'https://mega-la8q.onrender.com').replace(/\/+$/, '');
 const $ = (s, r = document) => r.querySelector(s);
 const $$ = (s, r = document) => [...r.querySelectorAll(s)];
 const esc = (s = '') => String(s).replace(/[&<>"]/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]));
 const img = (u) => (u ? `${API}/img?u=${encodeURIComponent(u)}` : '');
+
+const DEFAULT_SOURCES = [
+  { id: 'animesonline', name: 'AnimesOnline' },
+  { id: 'animefire', name: 'AnimeFire' },
+  { id: 'betteranime', name: 'BetterAnime' },
+  { id: 'animesroll', name: 'AnimesRoll' },
+  { id: 'anitube', name: 'AniTube' }
+];
 
 const store = {
   get(k, d = null) { try { return JSON.parse(localStorage.getItem('ma:' + k)) ?? d; } catch { return d; } },
   set(k, v) { try { localStorage.setItem('ma:' + k, JSON.stringify(v)); } catch {} },
   del(k) { localStorage.removeItem('ma:' + k); }
 };
+
 const toast = (t) => {
   const el = $('#toast'); if (!el) return;
   el.textContent = t; el.classList.add('on');
@@ -25,7 +34,87 @@ const ICONS = {
   site: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" style="width:13px;height:13px;margin-right:4px"><path d="M14 3h7v7"/><path d="M10 14 21 3"/><path d="M21 14v6a1 1 0 0 1-1 1H4a1 1 0 0 1-1-1V4a1 1 0 0 1 1-1h6"/></svg>'
 };
 
-/* ---------- normalizadores ---------- */
+/* Robust Poster Fallback via Jikan & AniList API */
+const posterFallbackCache = {};
+async function getPosterFallback(title) {
+  if (!title) return null;
+  const clean = String(title).replace(/\b(dub\w*|leg\w*|temporada\w*|\d+ª?|eps?\.?\s*\d+)\b/gi, '').trim();
+  if (posterFallbackCache[clean]) return posterFallbackCache[clean];
+
+  // 1. Try Jikan API
+  try {
+    const r = await fetch(`https://api.jikan.moe/v4/anime?q=${encodeURIComponent(clean)}&limit=1`);
+    const d = await r.json();
+    const url = d?.data?.[0]?.images?.jpg?.large_image_url || d?.data?.[0]?.images?.jpg?.image_url;
+    if (url) {
+      posterFallbackCache[clean] = url;
+      return url;
+    }
+  } catch {}
+
+  // 2. Try AniList GraphQL API
+  try {
+    const query = `
+      query ($search: String) {
+        Media(search: $search, type: ANIME) {
+          coverImage {
+            extraLarge
+            large
+          }
+        }
+      }
+    `;
+    const r = await fetch('https://graphql.anilist.co', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', 'Accept': 'application/json' },
+      body: JSON.stringify({ query, variables: { search: clean } })
+    });
+    const d = await r.json();
+    const url = d?.data?.Media?.coverImage?.extraLarge || d?.data?.Media?.coverImage?.large;
+    if (url) {
+      posterFallbackCache[clean] = url;
+      return url;
+    }
+  } catch {}
+
+  return null;
+}
+const getJikanCover = getPosterFallback;
+
+function unwrapOEmbed(data) {
+  if (!data) return null;
+  if (typeof data === 'object') {
+    if (data.html) {
+      const m = data.html.match(/src="([^"]+)"/);
+      if (m) return m[1];
+    }
+    if (data.url) return data.url;
+  }
+  if (typeof data === 'string') {
+    try {
+      const parsed = JSON.parse(data);
+      return unwrapOEmbed(parsed);
+    } catch {
+      const m = data.match(/src="([^"]+)"/);
+      if (m) return m[1];
+    }
+  }
+  return null;
+}
+
+function isSiteAnimePage(u = '') {
+  const unwrapped = unwrapOEmbed(u) || u;
+  if (!unwrapped) return true;
+  try {
+    const parsed = new URL(unwrapped);
+    const isAnimePath = /\/anime\/[^/]+\/?$/i.test(parsed.pathname) && !parsed.searchParams.get('ep');
+    const isAnimesOnline = /animesonline/i.test(parsed.hostname) && /\/anime\//i.test(parsed.pathname) && !/video\.g|videoplayback|\.mp4|\.m3u8/i.test(unwrapped);
+    return isAnimePath || isAnimesOnline;
+  } catch {
+    return /\/anime\/[^/?#]+$/i.test(String(unwrapped));
+  }
+}
+
 const asList = (d) => {
   if (Array.isArray(d)) return d;
   if (!d || typeof d !== 'object') return [];
@@ -35,6 +124,7 @@ const asList = (d) => {
   if (Array.isArray(d.sections)) return d.sections.flatMap(s => s.items || []);
   return [];
 };
+
 const cover = (a) => a.cover || a.poster || a.banner || null;
 
 function normAnime(a) {
@@ -44,12 +134,18 @@ function normAnime(a) {
     (s.episodes || []).forEach((e, idx) => {
       const list = Array.isArray(e.audio) ? e.audio : [e.audio || 'leg'];
       const n = e.number || idx + 1;
-      list.forEach((au) => eps.push({ number: n, audio: au, duration: e.duration || null }));
+      list.forEach((au) => eps.push({
+        number: n,
+        audio: au,
+        id: e.ids?.[au] ?? e.id ?? n,
+        duration: e.duration || null
+      }));
     });
     return { season: num, title: s.title || `Temporada ${num}`, episodes: eps };
   });
   const flat = seasons.flatMap(s => s.episodes);
   return {
+    source: a?.source || store.get('source', 'animesonline'),
     slug: a?.slug || '',
     title: a?.title || 'Sem título',
     cover: cover(a || {}),
@@ -57,6 +153,7 @@ function normAnime(a) {
     year: a?.year || null,
     type: a?.type || null,
     status: a?.status || null,
+    score: a?.score || null,
     genres: Array.isArray(a?.genres) ? a.genres : [],
     audios: [...new Set(flat.map(e => e.audio))],
     episodeCount: a?.episodeCount ?? flat.length,
@@ -64,39 +161,48 @@ function normAnime(a) {
   };
 }
 
-/* ---------- favoritos ---------- */
 const favs = () => store.get('favs', []);
 const isFav = (slug) => favs().some(x => x.slug === slug);
-function setFav(a, on) {
-  const l = favs().filter(x => x.slug !== a.slug);
-  if (on) l.unshift({ slug: a.slug, title: a.title, cover: cover(a) });
-  store.set('favs', l);
-  return on;
-}
+const setFav = (a, add) => {
+  let list = favs();
+  if (add) {
+    if (!list.some(x => x.slug === a.slug)) list.unshift({ slug: a.slug, source: a.source, title: a.title, cover: a.cover, type: a.type, year: a.year });
+  } else {
+    list = list.filter(x => x.slug !== a.slug);
+  }
+  store.set('favs', list);
+  return add;
+};
 const toggleFav = (a) => setFav(a, !isFav(a.slug));
 
-/* ---------- download ---------- */
 function saveFile(url, name) {
+  const realUrl = unwrapOEmbed(url) || url;
+  if (!realUrl || isSiteAnimePage(realUrl)) {
+    toast('Link direto de vídeo não disponível para download');
+    return;
+  }
   if (window.Android && window.Android.download) {
-    window.Android.download(url, name, 'video/mp4', 'https://www.blogger.com/');
+    window.Android.download(realUrl, name, 'video/mp4', 'https://www.blogger.com/');
     toast('Baixando em Downloads/MegaAnime');
     return;
   }
   const a = document.createElement('a');
-  a.href = url; a.download = name; a.target = '_blank'; a.rel = 'noreferrer';
+  a.href = realUrl; a.download = name; a.target = '_blank'; a.rel = 'noreferrer';
   a.click();
   toast('Download iniciado');
 }
 
-function card(a, ep) {
+function card(a, ep, srcOverride) {
+  const src = a.source || srcOverride || store.get('source', 'animesonline');
   const el = document.createElement('a');
   el.className = 'card';
-  el.href = `detail.html?slug=${encodeURIComponent(a.slug)}`;
+  el.href = `detail.html?source=${encodeURIComponent(src)}&slug=${encodeURIComponent(a.slug)}`;
   const c = cover(a);
+  const titleEsc = esc(a.title || '');
   el.innerHTML = `${ep ? `<span class="ep">EP ${esc(ep)}</span>` : ''}
-    ${c ? `<img loading="lazy" src="${img(c)}" alt="${esc(a.title)}">` : '<div style="aspect-ratio:2/3;background:#1b1b22"></div>'}
+    <img loading="lazy" src="${c ? img(c) : ''}" alt="${titleEsc}" onerror="this.onerror=null; getPosterFallback('${titleEsc}').then(u=>{if(u) this.src=u;});">
     <div class="pl"><span>${ICONS.play}</span></div>
-    <div class="cap"><b>${esc(a.title)}</b><small>${esc(a.type || a.year || '')}</small></div>`;
+    <div class="cap"><b>${titleEsc}</b><small>${esc([a.type, a.year].filter(Boolean).join(' • ') || src)}</small></div>`;
   return el;
 }
 
@@ -108,6 +214,15 @@ async function json(url) {
   if (!r.ok && data === null) throw new Error(`HTTP ${r.status}`);
   if (data && data.error && !Array.isArray(data)) throw new Error(data.error);
   return data;
+}
+
+async function fetchSources() {
+  try {
+    const r = await json(`${API}/api/sources`);
+    const d = r;
+    if (Array.isArray(d?.sources) && d.sources.length) return d.sources;
+  } catch {}
+  return DEFAULT_SOURCES;
 }
 
 const failBox = (box, msg, retry) => {
@@ -126,20 +241,23 @@ const failBox = (box, msg, retry) => {
 /* ================= HOME ================= */
 if (document.body.dataset.page === 'home') {
   let heroPool = [], hi = 0, page = 1, busy = false, done = false;
+  let currentSource = store.get('source', 'animesonline');
+  let availableSources = DEFAULT_SOURCES;
 
   const paintHero = () => {
     const a = heroPool[hi % heroPool.length];
     if (!a) return;
     const c = cover(a);
-    $('#hero').innerHTML = `${c ? `<img src="${img(c)}" alt="">` : ''}
+    const titleEsc = esc(a.title || '');
+    $('#hero').innerHTML = `${c ? `<img src="${img(c)}" alt="" onerror="this.onerror=null; getPosterFallback('${titleEsc}').then(u=>{if(u)this.src=u});">` : ''}
       <div class="inner">
         <div class="chips"><span class="chip red">Em destaque</span>
           ${a.type ? `<span class="chip">${esc(a.type)}</span>` : ''}
           ${a.year ? `<span class="chip star">${ICONS.star} ${esc(a.year)}</span>` : ''}</div>
-        <h2>${esc(a.title)}</h2>
+        <h2>${titleEsc}</h2>
         <p>${esc(a.synopsis || 'Assista agora, legendado ou dublado.')}</p>
         <div class="row">
-          <a class="btn" href="detail.html?slug=${encodeURIComponent(a.slug)}">${ICONS.play} Play</a>
+          <a class="btn" href="detail.html?source=${encodeURIComponent(currentSource)}&slug=${encodeURIComponent(a.slug)}">${ICONS.play} Play</a>
           <button class="btn circle" id="hero-fav" aria-label="Salvar"></button>
           <span class="pager">${(hi % heroPool.length) + 1} / ${heroPool.length}</span>
         </div>
@@ -151,7 +269,7 @@ if (document.body.dataset.page === 'home') {
       ? '<svg viewBox="0 0 24 24" fill="currentColor" stroke="currentColor" stroke-width="2"><path d="M6 3h12a1 1 0 0 1 1 1v17l-7-4-7 4V4a1 1 0 0 1 1-1z"/></svg>'
       : '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M6 3h12a1 1 0 0 1 1 1v17l-7-4-7 4V4a1 1 0 0 1 1-1z"/></svg>';
     fb.onclick = () => {
-      const on = toggleFav(a);
+      const on = toggleFav({ ...a, source: currentSource });
       paintHero();
       toast(on ? 'Salvo na lista' : 'Removido');
     };
@@ -179,11 +297,13 @@ if (document.body.dataset.page === 'home') {
   }
 
   async function loadHome() {
+    availableSources = await fetchSources();
+
     $('#latest').innerHTML = '<p class="empty">Carregando…</p>';
     $('#top').innerHTML = '';
     $('#added').innerHTML = '';
     try {
-      const list = asList(await json(`${API}/api/home`));
+      const list = asList(await json(`${API}/api/home?source=${encodeURIComponent(currentSource)}`));
       const uniq = [...new Map(list.map(a => [a.slug, a])).values()];
       if (!uniq.length) throw new Error('vazio');
 
@@ -193,21 +313,21 @@ if (document.body.dataset.page === 'home') {
       if (!$('#hero').dataset.wired) { $('#hero').dataset.wired = '1'; heroSwipe(); }
 
       $('#latest').innerHTML = '';
-      uniq.slice(0, 20).forEach(a => $('#latest').appendChild(card(a)));
-      uniq.slice(20, 32).forEach(a => $('#top').appendChild(card(a)));
-      if (!$('#top').children.length) uniq.slice(0, 12).forEach(a => $('#top').appendChild(card(a)));
+      uniq.slice(0, 20).forEach(a => $('#latest').appendChild(card(a, null, currentSource)));
+      uniq.slice(20, 32).forEach(a => $('#top').appendChild(card(a, null, currentSource)));
+      if (!$('#top').children.length) uniq.slice(0, 12).forEach(a => $('#top').appendChild(card(a, null, currentSource)));
 
-      const cat = asList(await json(`${API}/api/catalog?page=1`));
-      (cat.length ? cat : uniq).forEach(a => $('#added').appendChild(card(a)));
+      const cat = asList(await json(`${API}/api/catalog?page=1&source=${encodeURIComponent(currentSource)}`));
+      (cat.length ? cat : uniq).forEach(a => $('#added').appendChild(card(a, null, currentSource)));
 
       const cont = store.get('continue', []);
       if (cont.length) {
         $('#continue-wrap').classList.remove('hide');
         $('#continue').innerHTML = '';
-        cont.slice(0, 12).forEach(c => $('#continue').appendChild(card(c, c.ep)));
+        cont.slice(0, 12).forEach(c => $('#continue').appendChild(card(c, c.ep, c.source || currentSource)));
       }
     } catch {
-      failBox($('#latest'), 'Falha ao carregar. Verifique se o servidor está rodando e tente de novo.', loadHome);
+      failBox($('#latest'), 'Falha ao carregar. Tentar de novo.', loadHome);
     }
   }
   loadHome();
@@ -216,9 +336,9 @@ if (document.body.dataset.page === 'home') {
     if (busy || done) return;
     busy = true;
     try {
-      const list = asList(await json(`${API}/api/catalog?page=${++page}`));
+      const list = asList(await json(`${API}/api/catalog?page=${++page}&source=${encodeURIComponent(currentSource)}`));
       if (!list.length) done = true;
-      else list.forEach(a => $('#catalog').appendChild(card(a)));
+      else list.forEach(a => $('#catalog').appendChild(card(a, null, currentSource)));
     } catch {}
     busy = false;
   };
@@ -249,12 +369,21 @@ if (document.body.dataset.page === 'home') {
     if (!q) return;
     show('search');
     const box = $('#results');
-    box.innerHTML = '<p class="empty">Buscando…</p>';
+    box.innerHTML = '<p class="empty">Buscando em todas as fontes em paralelo…</p>';
     try {
-      const list = asList(await json(`${API}/api/search?q=${encodeURIComponent(q)}`));
+      const sources = await fetchSources();
+      const promises = sources.map(s => json(`${API}/api/search?q=${encodeURIComponent(q)}&source=${s.id}`).catch(() => null));
+      const settled = await Promise.allSettled(promises);
+      let allResults = [];
+      settled.forEach(res => {
+        if (res.status === 'fulfilled' && res.value) {
+          allResults.push(...asList(res.value));
+        }
+      });
+      const uniq = [...new Map(allResults.map(item => [item.slug || item.title, item])).values()];
       box.innerHTML = '';
-      if (!list.length) return failBox(box, `Nada encontrado para "${q}".`);
-      list.forEach(a => box.appendChild(card(a)));
+      if (!uniq.length) return failBox(box, `Nada encontrado para "${q}" em nenhuma fonte.`);
+      uniq.forEach(a => box.appendChild(card(a, null, a.source || sources[0]?.id)));
     } catch {
       failBox(box, 'Erro na busca.', () => $('#searchbar').requestSubmit());
     }
@@ -264,7 +393,7 @@ if (document.body.dataset.page === 'home') {
     const l = favs();
     $('#list').innerHTML = l.length ? '' : '<p class="empty">Sua lista está vazia. Abra um anime e toque no marcador.</p>';
     l.forEach(a => {
-      const el = card(a);
+      const el = card(a, null, a.source || currentSource);
       const b = document.createElement('button');
       b.className = 'card-x';
       b.innerHTML = ICONS.x;
@@ -286,7 +415,6 @@ if (document.body.dataset.page === 'home') {
     });
   }
 
-  /* ---------- temporadas ---------- */
   let seasonsReady = false;
   function initSeasons() {
     const sel = $('#s-year');
@@ -314,20 +442,21 @@ if (document.body.dataset.page === 'home') {
       box.innerHTML = '';
       if (!list.length) return failBox(box, 'Nada nesta temporada.', () => loadSeason(s));
       list.forEach(m => {
+        const titleEsc = esc(m.title || '');
         const el = document.createElement('a');
         el.className = 'card';
         el.href = '#';
-        el.innerHTML = `${m.cover ? `<img loading="lazy" src="${img(m.cover)}" alt="${esc(m.title)}">` : '<div style="aspect-ratio:2/3;background:#1b1b22"></div>'}
+        el.innerHTML = `${m.cover ? `<img loading="lazy" src="${img(m.cover)}" alt="${titleEsc}" onerror="this.onerror=null; getPosterFallback('${titleEsc}').then(u=>{if(u)this.src=u});">` : '<div style="aspect-ratio:2/3;background:#1b1b22"></div>'}
           ${m.score ? `<span class="ep">${ICONS.star} ${Number(m.score).toFixed(1)}</span>` : ''}
-          <div class="cap"><b>${esc(m.title)}</b><small>${esc(m.type || m.day || '')}</small></div>`;
+          <div class="cap"><b>${titleEsc}</b><small>${esc(m.type || m.day || '')}</small></div>`;
         el.onclick = async (e) => {
           e.preventDefault();
-          if (m.slug) return location.href = `detail.html?slug=${encodeURIComponent(m.slug)}`;
+          if (m.slug) return location.href = `detail.html?source=${encodeURIComponent(currentSource)}&slug=${encodeURIComponent(m.slug)}`;
           toast('Procurando no catálogo…');
           try {
             const r = asList(await json(`${API}/api/search?q=${encodeURIComponent(m.title)}`));
-            if (r[0]) location.href = `detail.html?slug=${encodeURIComponent(r[0].slug)}`;
-            else toast('Não disponível no site');
+            if (r[0]) location.href = `detail.html?source=${encodeURIComponent(r[0].source || currentSource)}&slug=${encodeURIComponent(r[0].slug)}`;
+            else toast('Não disponível nas fontes');
           } catch { toast('Falha na busca'); }
         };
         box.appendChild(el);
@@ -350,24 +479,99 @@ if (document.body.dataset.page === 'home') {
 
 /* ================= DETALHE ================= */
 if (document.body.dataset.page === 'detail') {
-  const slug = new URLSearchParams(location.search).get('slug');
-  let data = null, season = 1, audio = store.get('audio', 'leg');
+  const params = new URLSearchParams(location.search);
+  let source = params.get('source') || store.get('source', 'animesonline');
+  let slug = params.get('slug');
+  let data = null, season = 1, audio = store.get('audio', 'leg'), sourcesList = DEFAULT_SOURCES;
 
   $('#back').onclick = () => history.length > 1 ? history.back() : location.href = 'index.html';
 
-  (async () => {
+  async function findBestSlugInSource(srcId, titleText) {
+    if (!titleText) return null;
     try {
-      data = normAnime(await json(`${API}/api/anime/${encodeURIComponent(slug)}`));
+      const list = asList(await json(`${API}/api/search?q=${encodeURIComponent(titleText)}&source=${encodeURIComponent(srcId)}`));
+      if (!list.length) return null;
+      const norm = s => String(s || '').toLowerCase().replace(/[^a-z0-9]+/g, ' ').trim();
+      const target = norm(titleText);
+      const exact = list.find(i => norm(i.title) === target || norm(i.title).includes(target) || target.includes(norm(i.title)));
+      return (exact || list[0]).slug;
+    } catch {
+      return null;
+    }
+  }
+
+  async function loadDetail() {
+    sourcesList = await fetchSources();
+    const order = [source, ...sourcesList.map(s => s.id).filter(id => id !== source)];
+    let raw = null;
+
+    for (const src of order) {
+      try {
+        const res = await json(`${API}/api/anime/${encodeURIComponent(slug)}?source=${encodeURIComponent(src)}`).catch(() => null);
+        if (res && !res.error && (res.seasons || []).length) {
+          source = src;
+          store.set('source', source);
+          raw = res;
+          break;
+        }
+      } catch {}
+    }
+
+    if (!raw || raw.error) {
+      for (const src of order) {
+        try {
+          const altSlug = await findBestSlugInSource(src, slug.replace(/-/g, ' '));
+          if (altSlug) {
+            const res = await json(`${API}/api/anime/${encodeURIComponent(altSlug)}?source=${encodeURIComponent(src)}`).catch(() => null);
+            if (res && !res.error && (res.seasons || []).length) {
+              source = src;
+              slug = altSlug;
+              store.set('source', source);
+              raw = res;
+              break;
+            }
+          }
+        } catch {}
+      }
+    }
+
+    if (!raw || raw.error) {
+      $('#title').textContent = 'Anime não encontrado';
+      $('#badges').innerHTML = '<span class="red">indisponível</span>';
+      $('#syn').textContent = 'Não foi possível carregar os detalhes deste anime em nenhum servidor.';
+      return;
+    }
+
+    try {
+      data = normAnime({ ...raw, source });
       document.title = data.title;
       $('#title').textContent = data.title;
-      if (data.cover) {
-        $('#poster').src = img(data.cover);
-        $('#blur').innerHTML = `<img src="${img(data.cover)}" alt="">`;
+
+      const posterUrl = data.cover ? img(data.cover) : null;
+      if (posterUrl) {
+        $('#poster').src = posterUrl;
+        $('#poster').onerror = async function() {
+          this.onerror = null;
+          const u = await getPosterFallback(data.title);
+          if (u) {
+            this.src = u;
+            $('#blur').innerHTML = `<img src="${u}" alt="">`;
+          }
+        };
+        $('#blur').innerHTML = `<img src="${posterUrl}" alt="">`;
+      } else {
+        const u = await getPosterFallback(data.title);
+        const displayUrl = u || '';
+        if (displayUrl) {
+          $('#poster').src = displayUrl;
+          $('#blur').innerHTML = `<img src="${displayUrl}" alt="">`;
+        }
       }
+
       $('#syn').textContent = data.synopsis || 'Sem sinopse.';
       $('#genres').innerHTML = `<b>Gênero:</b> ${esc(data.genres.join(', ') || '—')}`;
 
-      const score = (7 + ((data.episodeCount || 12) % 20) / 10).toFixed(1);
+      const score = data.score ? Number(data.score).toFixed(1) : (7 + ((data.episodeCount || 12) % 20) / 10).toFixed(1);
       $('#badges').innerHTML = `
         <span class="star">${ICONS.star} ${score}</span>
         <span>${esc(data.year || '—')}</span>
@@ -377,39 +581,66 @@ if (document.body.dataset.page === 'detail') {
 
       season = data.seasons[0]?.season || 1;
       paintEps();
-      if (isFav(data.slug)) $('#fav').classList.add('on');
+      $('#fav').classList.toggle('on', isFav(data.slug));
 
-      json(`${API}/api/similar/${encodeURIComponent(slug)}`)
-        .then(r => {
-          const list = asList(r);
-          const g = $('#tab-rel .grid');
-          g.innerHTML = '';
-          if (!list.length) return g.innerHTML = '<p class="empty">Sem semelhantes.</p>';
-          list.forEach(a => g.appendChild(card(a)));
-        })
-        .catch(() => { $('#tab-rel .grid').innerHTML = '<p class="empty">Sem semelhantes.</p>'; });
+      /* Animes Semelhantes por gênero */
+      try {
+        const allSimilar = [];
+        for (const s of sourcesList) {
+          const r = await json(`${API}/api/home?source=${s.id}`).catch(() => null);
+          if (r) allSimilar.push(...asList(r));
+        }
+        const uniq = [...new Map(allSimilar.map(a => [a.slug, a])).values()].filter(a => a.slug !== slug);
+        const matching = uniq.filter(a => {
+          const aGenres = a.genres || [];
+          return aGenres.some(g => (data.genres || []).includes(g));
+        });
+        const finalSimilar = matching.length ? matching : uniq.slice(0, 12);
+        const g = $('#tab-rel .grid');
+        g.innerHTML = '';
+        if (!finalSimilar.length) g.innerHTML = '<p class="empty">Sem semelhantes.</p>';
+        else finalSimilar.forEach(a => g.appendChild(card(a, null, source)));
+      } catch {
+        $('#tab-rel .grid').innerHTML = '<p class="empty">Sem semelhantes.</p>';
+      }
 
-      json(`${API}/api/characters/${encodeURIComponent(slug)}`)
-        .then(r => {
-          const list = asList(r);
+      /* Personagens via Jikan API */
+      try {
+        const jikanSearch = await fetch(`https://api.jikan.moe/v4/anime?q=${encodeURIComponent(data.title)}&limit=1`).then(r => r.json());
+        const animeMalId = jikanSearch?.data?.[0]?.mal_id;
+        if (animeMalId) {
+          const charRes = await fetch(`https://api.jikan.moe/v4/anime/${animeMalId}/characters`).then(r => r.json());
+          const charsList = charRes?.data || [];
           $('#tab-chars').innerHTML = '';
-          if (!list.length) return $('#tab-chars').innerHTML = '<p class="empty">Personagens não encontrados.</p>';
-          const g = document.createElement('div');
-          g.className = 'chars';
-          list.forEach(c => {
-            const el = document.createElement('div');
-            el.className = 'char';
-            el.innerHTML = `${c.image ? `<img loading="lazy" src="${img(c.image)}" alt="${esc(c.name)}">` : ''}<b>${esc(c.name)}</b>`;
-            g.appendChild(el);
-          });
-          $('#tab-chars').appendChild(g);
-        })
-        .catch(() => { $('#tab-chars').innerHTML = '<p class="empty">Personagens indisponíveis.</p>'; });
+          if (!charsList.length) {
+            $('#tab-chars').innerHTML = '<p class="empty">Personagens não encontrados.</p>';
+          } else {
+            const g = document.createElement('div');
+            g.className = 'chars';
+            charsList.forEach(c => {
+              const el = document.createElement('div');
+              el.className = 'char';
+              const imgUrl = c.character?.images?.jpg?.image_url || '';
+              const name = c.character?.name || 'Personagem';
+              const role = c.role || '';
+              el.innerHTML = `${imgUrl ? `<img loading="lazy" src="${esc(imgUrl)}" alt="${esc(name)}">` : ''}<b>${esc(name)}</b><small>${esc(role)}</small>`;
+              g.appendChild(el);
+            });
+            $('#tab-chars').appendChild(g);
+          }
+        } else {
+          $('#tab-chars').innerHTML = '<p class="empty">Personagens indisponíveis.</p>';
+        }
+      } catch {
+        $('#tab-chars').innerHTML = '<p class="empty">Personagens indisponíveis.</p>';
+      }
     } catch {
       $('#title').textContent = 'Falha ao carregar';
       $('#badges').innerHTML = '<span class="red">erro</span>';
     }
-  })();
+  }
+
+  loadDetail();
 
   function paintEps() {
     const box = $('#tab-eps');
@@ -452,7 +683,7 @@ if (document.body.dataset.page === 'detail') {
     eps.forEach((e, idx) => {
       const n = e.number || idx + 1;
       const a = document.createElement('a');
-      a.href = `player.html?slug=${encodeURIComponent(data.slug)}&ep=${n}&season=${season}&audio=${e.audio}`;
+      a.href = `player.html?source=${encodeURIComponent(source)}&slug=${encodeURIComponent(data.slug)}&ep=${n}&season=${season}&audio=${e.audio}`;
       a.innerHTML = `${n}${e.duration ? `<small>${esc(e.duration)}</small>` : ''}`;
       grid.appendChild(a);
     });
@@ -468,7 +699,7 @@ if (document.body.dataset.page === 'detail') {
     const ep = currentEp();
     if (!ep) return toast('Sem episódios');
     const n = ep.number || 1;
-    location.href = `player.html?slug=${encodeURIComponent(data.slug)}&ep=${n}&season=${season}&audio=${ep.audio}`;
+    location.href = `player.html?source=${encodeURIComponent(source)}&slug=${encodeURIComponent(data.slug)}&ep=${n}&season=${season}&audio=${ep.audio}`;
   };
 
   $('#dls').onclick = async () => {
@@ -477,13 +708,14 @@ if (document.body.dataset.page === 'detail') {
     toast('Preparando download…');
     try {
       const n = ep.number || 1;
-      const d = await json(`${API}/api/streams/${encodeURIComponent(slug)}/${n}?season=${season}&audio=${ep.audio}`);
-      const list = d.streams || d.sources || [];
+      const d = await json(`${API}/api/streams/${encodeURIComponent(slug)}/${n}?source=${encodeURIComponent(source)}&season=${season}&audio=${ep.audio}`);
+      const list = (d.streams || d.sources || []).filter(s => s.url && !isSiteAnimePage(s.url));
       const best = list[list.length - 1];
-      if (!best) return toast('Sem arquivo para baixar');
+      if (!best) return toast('Sem arquivo direto para baixar');
+      const realUrl = unwrapOEmbed(best.url) || best.url;
       const name = `${slug}-T${season}E${n}-${best.quality}.mp4`.replace(/\s+/g, '_');
-      saveFile(best.url, name);
-      store.set('dls', [...store.get('dls', []), { title: data.title, ep: n, quality: best.quality, url: best.url }].slice(-40));
+      saveFile(realUrl, name);
+      store.set('dls', [...store.get('dls', []), { title: data.title, ep: n, quality: best.quality, url: realUrl }].slice(-40));
     } catch { toast('Falha ao preparar download'); }
   };
 
@@ -497,7 +729,7 @@ if (document.body.dataset.page === 'detail') {
   $('#like').onclick = () => { $('#like').classList.toggle('on'); toast('Curtido'); };
 
   $('#share').onclick = async () => {
-    const url = `https://animesonline.blue/anime/${slug}`;
+    const url = location.href;
     try { await navigator.share({ title: data?.title || slug, url }); }
     catch { try { await navigator.clipboard.writeText(url); toast('Link copiado'); } catch { toast(url); } }
   };
@@ -518,27 +750,43 @@ if (document.body.dataset.page === 'detail') {
 /* ================= PLAYER ================= */
 if (document.body.dataset.page === 'player') {
   const p = new URLSearchParams(location.search);
-  const slug = p.get('slug');
+  let source = p.get('source') || store.get('source', 'animesonline');
+  let slug = p.get('slug');
   const season = +(p.get('season') || 1);
   let ep = +(p.get('ep') || 1);
   let audio = p.get('audio') === 'dub' ? 'dub' : store.get('audio', 'leg');
   let server = store.get('srv', 'native');
-  let info = null, plyr = null, tries = 0;
+  let info = null, plyr = null, tries = 0, sourcesList = DEFAULT_SOURCES;
 
   $('#back').onclick = () => history.length > 1 ? history.back() : location.href = 'index.html';
 
+  async function loadInfo() {
+    sourcesList = await fetchSources();
+    const order = [source, ...sourcesList.map(s => s.id).filter(id => id !== source)];
+    for (const src of order) {
+      try {
+        const raw = await json(`${API}/api/anime/${encodeURIComponent(slug)}?source=${encodeURIComponent(src)}`);
+        if (raw && !raw.error) {
+          source = src;
+          store.set('source', source);
+          info = normAnime({ ...raw, source });
+          $('#ptitle').textContent = `${info.title} — EP ${ep}`;
+          document.title = $('#ptitle').textContent;
+          buildStrip();
+          return;
+        }
+      } catch {}
+    }
+    $('#stage').innerHTML = '<p class="empty">Falha ao carregar informações do anime.</p>';
+  }
+
   (async () => {
-    try {
-      info = normAnime(await json(`${API}/api/anime/${encodeURIComponent(slug)}`));
-      $('#ptitle').textContent = `${info.title} — EP ${ep}`;
-      document.title = $('#ptitle').textContent;
-      buildStrip();
-      await load();
-    } catch { $('#stage').innerHTML = '<p class="empty">Falha ao carregar.</p>'; }
+    await loadInfo();
+    await load();
   })();
 
   function buildStrip() {
-    const se = info?.seasons.find(s => s.season === season);
+    const se = info?.seasons.find(s => s.season === season) || info?.seasons[0];
     $('#strip').innerHTML = '';
     (se?.episodes || []).filter(e => e.audio === audio).forEach((e, idx) => {
       const n = e.number || idx + 1;
@@ -550,7 +798,7 @@ if (document.body.dataset.page === 'player') {
         ev.preventDefault();
         ep = n;
         tries = 0;
-        $('#ptitle').textContent = `${info.title} — EP ${ep}`;
+        $('#ptitle').textContent = `${info?.title || slug} — EP ${ep}`;
         buildStrip();
         load();
       };
@@ -558,72 +806,111 @@ if (document.body.dataset.page === 'player') {
     });
   }
 
-  function mountFrame(src, siteUrl) {
-    if (!src) return false;
-    $('#stage').innerHTML = `<iframe src="${esc(src)}" allow="autoplay;fullscreen;encrypted-media" allowfullscreen referrerpolicy="origin"></iframe>`;
+  function mountFrame(src) {
+    const realSrc = unwrapOEmbed(src) || src;
+    if (!realSrc || isSiteAnimePage(realSrc)) return false;
+    $('#stage').innerHTML = `<iframe src="${esc(realSrc)}" allow="autoplay;fullscreen;encrypted-media;picture-in-picture" allowfullscreen referrerpolicy="no-referrer-when-downgrade" style="width:100%;height:100%;border:0"></iframe>`;
     $('#qbox').innerHTML = '';
-    if (siteUrl && siteUrl !== src) {
-      const a = document.createElement('a');
-      a.className = 'tag dl';
-      a.innerHTML = `${ICONS.site}Ver no site`;
-      a.href = siteUrl;
-      a.target = '_blank';
-      a.rel = 'noreferrer';
-      $('#qbox').appendChild(a);
-    }
     const retry = document.createElement('button');
     retry.className = 'tag';
-    retry.textContent = 'Tentar vídeo';
+    retry.textContent = 'Tentar vídeo direto';
     retry.onclick = () => { server = 'native'; store.set('srv', 'native'); tries = 0; load(); };
     $('#qbox').appendChild(retry);
     return true;
   }
 
+  async function resolveStreamWithFallback() {
+    sourcesList = await fetchSources();
+    const order = [source, ...sourcesList.map(s => s.id).filter(id => id !== source)];
+    for (const src of order) {
+      try {
+        const qs = new URLSearchParams({ source: src, audio, season: String(season), n: String(ep) }).toString();
+        const d = await json(`${API}/api/streams/${encodeURIComponent(slug)}/${ep}?${qs}`);
+        const list = (d.streams || d.sources || []).filter(s => (s.url || s.proxyUrl) && !isSiteAnimePage(s.url || s.proxyUrl));
+        const validIframes = (d.iframes || []).filter(u => u && !isSiteAnimePage(u));
+        const embedUrl = unwrapOEmbed((!isSiteAnimePage(d.iframe) ? d.iframe : null) || validIframes[0] || null);
+        if (list.length || embedUrl) {
+          source = src;
+          store.set('source', source);
+          return { d, list, embedUrl };
+        }
+      } catch {}
+    }
+    return null;
+  }
+
   async function load() {
-    $('#stage').innerHTML = '<p class="empty">Resolvendo…</p>';
+    $('#stage').innerHTML = '<p class="empty">Resolvendo episódio…</p>';
     $('#qbox').innerHTML = '';
     try {
-      const d = await json(`${API}/api/streams/${encodeURIComponent(slug)}/${ep}?season=${season}&audio=${audio}`);
-      const list = (d.streams || d.sources || []).filter(s => s.url);
-      const blogger = d.iframe && /blogger\.com\/video\.g/.test(d.iframe) ? d.iframe : null;
-      const sitePage = d.site || (d.iframe && d.iframe !== blogger ? d.iframe : null);
+      const resolved = await resolveStreamWithFallback();
+      if (!resolved) {
+        $('#stage').innerHTML = '<p class="empty">Episódio sem stream disponível em nenhum servidor. Tente outro áudio.</p>';
+        return;
+      }
+      const { d, list, embedUrl } = resolved;
 
-      if (!list.length) {
-        if (mountFrame(blogger, sitePage || blogger)) {
-          store.set('continue', [{ slug, title: info.title, cover: info.cover, ep },
+      if (server === 'iframe' && embedUrl) {
+        if (mountFrame(embedUrl)) {
+          store.set('continue', [{ slug, source, title: info?.title || slug, cover: info?.cover, ep },
             ...store.get('continue', []).filter(x => x.slug !== slug)].slice(0, 12));
           return;
         }
-        if (sitePage) {
-          $('#stage').innerHTML = `<iframe src="${esc(sitePage)}" allow="autoplay;fullscreen" allowfullscreen referrerpolicy="origin"></iframe>`;
-          toast('Sem arquivo direto, abrindo o player do site');
-          return;
-        }
-        throw new Error('sem fonte');
       }
 
-      if (server === 'iframe') {
-        if (mountFrame(blogger || sitePage, sitePage)) return;
+      if (!list.length) {
+        if (embedUrl && mountFrame(embedUrl)) {
+          store.set('continue', [{ slug, source, title: info?.title || slug, cover: info?.cover, ep },
+            ...store.get('continue', []).filter(x => x.slug !== slug)].slice(0, 12));
+          return;
+        }
+        $('#stage').innerHTML = '<p class="empty">Episódio sem stream disponível. Tente outro áudio.</p>';
+        return;
       }
 
       const best = list[list.length - 1];
-      $('#stage').innerHTML = '<video id="v" playsinline crossorigin></video>';
+      const rawBestSrc = best.proxyUrl ? `${API}${best.proxyUrl}` : best.url;
+      const bestSrc = unwrapOEmbed(rawBestSrc) || rawBestSrc;
+
+      /* Immersive player layout with center controls, volume/brightness sliders, and EP badge */
+      $('#stage').innerHTML = `<div class="adv-player-wrapper" style="position:relative;width:100%;height:100%;background:#000">
+        <video id="v" playsinline crossorigin style="width:100%;height:100%;display:block"></video>
+        <div class="adv-overlay" style="position:absolute;inset:0;pointer-events:none;display:flex;flex-direction:column;justify-content:space-between;padding:12px">
+          <div style="display:flex;justify-content:space-between;align-items:center;pointer-events:auto">
+            <span class="ep-badge" style="background:var(--red);color:#fff;padding:3px 8px;border-radius:4px;font-size:11px;font-weight:900">EP ${ep}</span>
+          </div>
+          <div class="center-btns" style="display:flex;justify-content:center;align-items:center;gap:24px;pointer-events:auto">
+            <button id="btn-10s" class="btn dark circle" style="background:rgba(0,0,0,.6);border:1px solid rgba(255,255,255,.2)" title="-10s">↺ 10</button>
+            <button id="btn-playpause" class="btn circle" style="width:52px;height:52px;background:var(--red)" title="Play/Pause">▶</button>
+            <button id="btn+10s" class="btn dark circle" style="background:rgba(0,0,0,.6);border:1px solid rgba(255,255,255,.2)" title="+10s">10 ↻</button>
+          </div>
+          <div style="display:flex;justify-content:flex-end;align-items:center;gap:12px;pointer-events:auto">
+            <label style="font-size:11px;color:#fff;background:rgba(0,0,0,.6);padding:4px 8px;border-radius:6px;display:flex;align-items:center;gap:4px">
+              Vol <input id="range-vol" type="range" min="0" max="1" step="0.05" value="1" style="width:60px">
+            </label>
+            <label style="font-size:11px;color:#fff;background:rgba(0,0,0,.6);padding:4px 8px;border-radius:6px;display:flex;align-items:center;gap:4px">
+              Brilho <input id="range-bright" type="range" min="0.3" max="1.7" step="0.05" value="1" style="width:60px">
+            </label>
+          </div>
+        </div>
+      </div>`;
+
       const video = $('#v');
-      video.src = best.url;
+      video.src = bestSrc;
       if (info?.cover) video.poster = img(info.cover);
 
       video.addEventListener('error', () => {
         if (tries++ < 2) { toast('Link expirou, resolvendo de novo'); load(); return; }
-        if (mountFrame(blogger, sitePage)) toast('Trocando para o player do site');
-        else $('#stage').innerHTML = '<p class="empty">Não foi possível tocar. Troque o servidor nas opções.</p>';
+        if (embedUrl && mountFrame(embedUrl)) toast('Trocando para player embed');
+        else $('#stage').innerHTML = '<p class="empty">Não foi possível reproduzir este stream.</p>';
       });
 
       if (window.Plyr) {
         plyr = new Plyr(video, {
           controls: ['play-large', 'play', 'progress', 'current-time', 'duration', 'mute', 'volume', 'settings', 'pip', 'fullscreen'],
           settings: ['quality', 'speed'],
-          quality: { default: +best.itag, options: list.map(s => +s.itag) },
-          speed: { selected: 1, options: [0.75, 1, 1.25, 1.5, 2] },
+          quality: { default: +best.itag || 720, options: list.map(s => +s.itag || 720) },
+          speed: { selected: 1, options: [0.5, 1, 1.25, 1.5, 2] },
           storage: { enabled: true, key: 'ma-plyr' }
         });
         video.addEventListener('timeupdate', saveProgress);
@@ -633,13 +920,34 @@ if (document.body.dataset.page === 'player') {
         video.addEventListener('ended', next);
       }
 
+      $('#btn-10s')?.addEventListener('click', () => { video.currentTime = Math.max(0, video.currentTime - 10); });
+      $('#btn+10s')?.addEventListener('click', () => { video.currentTime = Math.min(video.duration || 0, video.currentTime + 10); });
+      const ppBtn = $('#btn-playpause');
+      if (ppBtn) {
+        ppBtn.onclick = () => {
+          if (video.paused) { video.play(); ppBtn.textContent = '⏸'; }
+          else { video.pause(); ppBtn.textContent = '▶'; }
+        };
+        video.onplay = () => ppBtn.textContent = '⏸';
+        video.onpause = () => ppBtn.textContent = '▶';
+      }
+
+      $('#range-vol')?.addEventListener('input', (e) => {
+        video.volume = e.target.value;
+      });
+      $('#range-bright')?.addEventListener('input', (e) => {
+        video.style.filter = `brightness(${e.target.value})`;
+      });
+
       list.slice().reverse().forEach(s => {
         const b = document.createElement('button');
         b.className = 'tag';
-        b.textContent = s.quality;
+        b.textContent = s.quality || s.label || 'HD';
         b.onclick = () => {
-          if (plyr) { plyr.source = { type: 'video', sources: [{ src: s.url, type: 'video/mp4' }] }; plyr.play(); }
-          else { video.src = s.url; video.play(); }
+          const rawSrc = s.proxyUrl ? `${API}${s.proxyUrl}` : s.url;
+          const srcUrl = unwrapOEmbed(rawSrc) || rawSrc;
+          if (plyr) { plyr.source = { type: 'video', sources: [{ src: srcUrl, type: s.mime || 'video/mp4' }] }; plyr.play(); }
+          else { video.src = srcUrl; video.play(); }
           $$('#qbox .tag').forEach(x => x.classList.toggle('on', x === b));
         };
         $('#qbox').appendChild(b);
@@ -651,24 +959,14 @@ if (document.body.dataset.page === 'player') {
       dl.innerHTML = `${ICONS.dl}Baixar`;
       dl.onclick = () => {
         saveFile(best.url, `${slug}-T${season}E${ep}-${best.quality}.mp4`.replace(/\s+/g, '_'));
-        store.set('dls', [...store.get('dls', []), { title: info.title, ep, quality: best.quality, url: best.url }].slice(-40));
+        store.set('dls', [...store.get('dls', []), { title: info?.title || slug, ep, quality: best.quality, url: best.url }].slice(-40));
       };
       $('#qbox').appendChild(dl);
 
-      if (sitePage) {
-        const site = document.createElement('a');
-        site.className = 'tag dl';
-        site.innerHTML = `${ICONS.site}Ver no site`;
-        site.href = sitePage;
-        site.target = '_blank';
-        site.rel = 'noreferrer';
-        $('#qbox').appendChild(site);
-      }
-
-      store.set('continue', [{ slug, title: info.title, cover: info.cover, ep },
+      store.set('continue', [{ slug, source, title: info?.title || slug, cover: info?.cover, ep },
         ...store.get('continue', []).filter(x => x.slug !== slug)].slice(0, 12));
     } catch {
-      $('#stage').innerHTML = '<p class="empty">Episódio indisponível. Troque o servidor nas opções ou tente outro episódio.</p>';
+      $('#stage').innerHTML = '<p class="empty">Episódio indisponível.</p>';
     }
   }
 
@@ -679,13 +977,13 @@ if (document.body.dataset.page === 'player') {
   }
 
   function next() {
-    const se = info?.seasons.find(s => s.season === season);
+    const se = info?.seasons.find(s => s.season === season) || info?.seasons[0];
     const list = (se?.episodes || []).filter(e => e.audio === audio);
     const i = list.findIndex(e => (e.number || 0) === ep);
     if (i >= 0 && list[i + 1]) {
       ep = list[i + 1].number || ep + 1;
       tries = 0;
-      $('#ptitle').textContent = `${info.title} — EP ${ep}`;
+      $('#ptitle').textContent = `${info?.title || slug} — EP ${ep}`;
       buildStrip();
       load();
     }
@@ -693,13 +991,13 @@ if (document.body.dataset.page === 'player') {
 
   $('#next').onclick = next;
   $('#prev').onclick = () => {
-    const se = info?.seasons.find(s => s.season === season);
+    const se = info?.seasons.find(s => s.season === season) || info?.seasons[0];
     const list = (se?.episodes || []).filter(e => e.audio === audio);
     const i = list.findIndex(e => (e.number || 0) === ep);
     if (i > 0) {
       ep = list[i - 1].number || ep - 1;
       tries = 0;
-      $('#ptitle').textContent = `${info.title} — EP ${ep}`;
+      $('#ptitle').textContent = `${info?.title || slug} — EP ${ep}`;
       buildStrip();
       load();
     }
@@ -710,7 +1008,7 @@ if (document.body.dataset.page === 'player') {
     b.onclick = () => {
       audio = b.dataset.audio;
       store.set('audio', audio);
-      $$('[data-audio]').forEach(x => x.classList.toggle('on', x === b.dataset.audio));
+      $$('[data-audio]').forEach(x => x.classList.toggle('on', x.dataset.audio === audio));
       $('#overlay').classList.remove('on');
       buildStrip();
       load();
