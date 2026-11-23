@@ -4,7 +4,7 @@
             "outputFile": "com.megaanime.app-mergeReleaseResources-22:/values-v26/values-v26.xml",
             "map": [
                 {
-                    "source": "C:\\Users\\konoz\\.gradle\\caches\\8.13\\transforms\\5e611fd0c3131a8c365b5a098df1ccee\\transformed\\appcompat-1.7.0\\res\\values-v26\\values-v26.xml",
+                    "source": "C:\\Users\\konoz\\.gradle\\caches\\9.6.0\\transforms\\b41bc03c40f0097b197b2254c5cec3d1\\transformed\\appcompat-1.7.0\\res\\values-v26\\values-v26.xml",
                     "from": {
                         "startLines": "2,3,4,8,12,16",
                         "startColumns": "4,4,4,4,4,4",

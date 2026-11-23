@@ -143,39 +143,55 @@ app.post('/api/priority', (req, res) => {
 app.get(['/api/home', '/api/home/:source'], async (req, res) => {
   const first = pick(req);
   const order = sourceQueue(first.meta.id);
+  const BATCH = 3;
 
-  for (const src of order) {
-    try {
-      const raw = await budget(Promise.resolve(src.home()), 12000);
-      const hero = (raw?.hero || []).map((i) => cardOf(i, src.meta.id));
+  for (let i = 0; i < order.length; i += BATCH) {
+    const batch = order.slice(i, i + BATCH);
+    const settled = await Promise.allSettled(
+      batch.map(async (src) => {
+        try {
+          const raw = await budget(Promise.resolve(src.home()), 8000);
+          return { src, raw };
+        } catch (e) {
+          return { src, raw: null };
+        }
+      })
+    );
 
-      const rawSections = (raw?.sections || [])
-        .map((sec) => ({
-          id: sec.id || 'latest',
-          title: sec.title || '',
-          items: (sec.items || []).map((i) => cardOf(i, src.meta.id)),
-        }))
-        .filter((sec) => sec.items.length);
+    const success = settled.find(
+      (s) => s.status === 'fulfilled' && s.value?.raw
+    );
+    if (!success) continue;
 
-      const all = dedupe([...hero, ...rawSections.flatMap((sec) => sec.items)]);
-      if (!all.length) continue;
+    const { src, raw } = success.value;
+    const hero = (raw?.hero || []).map((i) => cardOf(i, src.meta.id));
 
-      let latest = rawSections.find((sec) => sec.id === 'latest')?.items || [];
-      if (!latest.length) latest = all.slice(0, 24);
+    const rawSections = (raw?.sections || [])
+      .map((sec) => ({
+        id: sec.id || 'latest',
+        title: sec.title || '',
+        items: (sec.items || []).map((i) => cardOf(i, src.meta.id)),
+      }))
+      .filter((sec) => sec.items.length);
 
-      let top = rawSections.find((sec) => sec.id === 'top')?.items || [];
-      if (top.length < 8) {
-        const pool = dedupe([...all, ...(await budget(trendingPool(src), 12000).catch(() => []))]);
-        top = rotate(pool, daySeed()).slice(0, 24);
-      }
+    const all = dedupe([...hero, ...rawSections.flatMap((sec) => sec.items)]);
+    if (!all.length) continue;
 
-      const sections = [
-        { id: 'latest', title: 'Novos Episódios', items: latest },
-        { id: 'top', title: 'Em Alta', items: top },
-      ];
+    let latest = rawSections.find((sec) => sec.id === 'latest')?.items || [];
+    if (!latest.length) latest = all.slice(0, 24);
 
-      return ok(res, { source: src.meta.id, hero, sections }, 45);
-    } catch {}
+    let top = rawSections.find((sec) => sec.id === 'top')?.items || [];
+    if (top.length < 8) {
+      const pool = dedupe([...all, ...(await budget(trendingPool(src), 12000).catch(() => []))]);
+      top = rotate(pool, daySeed()).slice(0, 24);
+    }
+
+    const sections = [
+      { id: 'latest', title: 'Novos Episódios', items: latest },
+      { id: 'top', title: 'Em Alta', items: top },
+    ];
+
+    return ok(res, { source: src.meta.id, hero, sections }, 45);
   }
 
   ok(res, { source: first.meta.id, hero: [], sections: [] }, 15);
@@ -338,7 +354,7 @@ app.get(['/api/anime/:slug', '/api/anime/:source/:slug'], async (req, res) => {
     return res.json(a);
   } catch (firstErr) {
     const q = normTitle(targetSlug.replace(/[-_]+/g, ' '));
-    const others = sourceQueue(src.meta.id).filter((s) => s.meta.id !== src.meta.id);
+    const others = sourceQueue(src.meta.id).filter((s) => s.meta.id !== src.meta.id).slice(0, 2);
 
     for (const alt of others) {
       try {
@@ -456,7 +472,7 @@ app.get(['/api/streams/:slug/:ep', '/api/streams/:source/:slug/:ep'], async (req
     /* FIX: fallback segue a fila priorizada do usuário */
     if (!finalPayload.sources.length && !finalPayload.iframe) {
       const q = normTitle(first.animeTitle || req.params.slug.replace(/[-_]+/g, ' '));
-      const others = sourceQueue(preferredSrc.meta.id).filter((s) => s.meta.id !== preferredSrc.meta.id);
+      const others = sourceQueue(preferredSrc.meta.id).filter((s) => s.meta.id !== preferredSrc.meta.id).slice(0, 2);
       for (const alt of others) {
         try {
           const found = await budget(Promise.resolve(alt.search(q)), 8000).catch(() => []);
@@ -500,30 +516,22 @@ const asItems = (d) => (Array.isArray(d) ? d : (d?.items || d?.data || []));
 async function seasonPayload(year, season) {
   const key = seasonKey(year, season);
   const hit = seasonCache.get(key);
-  if (hit && Date.now() - hit.t < 30 * 60_000) return hit.v;
+  if (hit && Date.now() - hit.t < 60 * 60_000) return hit.v;
 
   let items = [];
 
   try {
-    const src = getSource(defaultSourceId());
-    const { items: cat } = await budget(Promise.resolve(src.catalog(1)), 10000);
-    items = (cat || [])
-      .filter((a) => !a.year || String(a.year) === String(year))
-      .map((a) => cardOf(a, src.meta.id));
+    const d = await budget(jikan.season(year, season), 12000);
+    items = asItems(d);
   } catch {}
 
   if (!items.length) {
     try {
-      const d = await budget(jikan.season(year, season), 12000);
-      items = asItems(d);
-    } catch {}
-  }
-
-  if (!items.length) {
-    try {
       const src = getSource(defaultSourceId());
-      const { items: cat } = await budget(Promise.resolve(src.catalog(1)), 8000);
-      items = (cat || []).map((a) => cardOf(a, src.meta.id));
+      const { items: cat } = await budget(Promise.resolve(src.catalog(1)), 10000);
+      items = (cat || [])
+        .filter((a) => !a.year || String(a.year) === String(year))
+        .map((a) => cardOf(a, src.meta.id));
     } catch {}
   }
 
@@ -534,8 +542,7 @@ async function seasonPayload(year, season) {
 
 app.get('/api/seasons', async (_req, res) => {
   try {
-    const fn = jikan.seasonNow || jikan.now;
-    const d = await budget(Promise.resolve(fn()), 12000);
+    const d = await budget(jikan.now(), 12000);
     ok(res, { items: asItems(d) }, 900);
   } catch {
     ok(res, { items: [] }, 60);

@@ -17,10 +17,114 @@ const isJunkMedia = (u = '') => {
 };
 const isBloggerEmbed = (u = '') => /blogger\.com\/video\.g|video\.g\?token=/i.test(String(u || ''));
 
+/* ===== FIX: ponte nativa Android (window.AndroidScraper) — HTML fresco do episódio ===== */
+window.__scraperWaiters = window.__scraperWaiters || {};
+let scraperSeq = 0;
+
+const hasNativeScraper = () => {
+  const b = window.AndroidScraper;
+  return !!(b && typeof b.fetch === 'function');
+};
+
+window.__scraperResult = (id, ok, body, finalUrl, status, err) => {
+  const fn = window.__scraperWaiters[id];
+  if (!fn) return;
+  delete window.__scraperWaiters[id];
+  fn(!!ok, body || '', finalUrl || '', status, err || '');
+};
+
+function nativeFetchHtml(url, referer, timeout = 14000) {
+  return new Promise((resolve, reject) => {
+    if (!hasNativeScraper()) { reject(new Error('sem ponte')); return; }
+    const id = `s${++scraperSeq}_${Date.now()}`;
+    const timer = setTimeout(() => {
+      delete window.__scraperWaiters[id];
+      reject(new Error('timeout'));
+    }, timeout);
+    window.__scraperWaiters[id] = (ok, body, finalUrl, status, err) => {
+      clearTimeout(timer);
+      if (ok) resolve({ html: body, url: finalUrl || url, status });
+      else reject(new Error(`http ${status} ${err}`.trim()));
+    };
+    try { window.AndroidScraper.fetch(String(url), referer ? String(referer) : '', id); }
+    catch (e) { clearTimeout(timer); delete window.__scraperWaiters[id]; reject(e); }
+  });
+}
+
+const BLOGGER_RE = /(?:https?:)?\/\/www\.blogger\.com\/video\.g\?token=[\w-]+[^"'\s<>\\]*/gi;
+const SRC_ATTR_RE = /(?:src|file|data-src|data-file|data-video|data-url)\s*[=:]\s*["']([^"']{6,})["']/gi;
+const VIDEO_EXT_RE = /\.(?:mp4|m3u8|webm|m4v)(?:[?#]|$)/i;
+const OMIT_RE = /\/bg\.mp4|\/feed\/?([?#]|$)|\/wp-json\/oembed|(?:^|\/)embed(?:[/?]|$)/i;
+
+function absUrl(u, base) {
+  try { return new URL(String(u).replace(/\\\//g, '/'), base).href; } catch { return ''; }
+}
+
+/* FIX: extrai apenas URL real de reprodução, descartando lixo/página do site */
+function parseEpisodeHtml(html, baseUrl) {
+  const out = { iframes: [], direct: [] };
+  const text = String(html || '');
+  if (!text) return out;
+
+  for (const m of text.matchAll(BLOGGER_RE)) {
+    const u = absUrl(m[0].replace(/^\/\//, 'https://'), baseUrl);
+    if (u && !out.iframes.includes(u)) out.iframes.push(u);
+  }
+
+  for (const m of text.matchAll(/<iframe[^>]+src=["']([^"']+)["']/gi)) {
+    const u = absUrl(m[1], baseUrl);
+    if (!u || isJunkMedia(u) || OMIT_RE.test(u)) continue;
+    if (isBloggerEmbed(u) || !isSiteAnimePage(u)) {
+      if (!out.iframes.includes(u)) out.iframes.push(u);
+    }
+  }
+
+  for (const m of text.matchAll(SRC_ATTR_RE)) {
+    const u = absUrl(m[1], baseUrl);
+    if (!u || isBloggerEmbed(u) || !VIDEO_EXT_RE.test(u)) continue;
+    if (isJunkMedia(u) || isSiteAnimePage(u) || OMIT_RE.test(u)) continue;
+    if (!out.direct.includes(u)) out.direct.push(u);
+  }
+
+  out.iframes.sort((a, b) => (isBloggerEmbed(b) ? 1 : 0) - (isBloggerEmbed(a) ? 1 : 0));
+  return out;
+}
+
+async function scrapeEpisode(pageUrl) {
+  const referer = (() => { try { return new URL(pageUrl).origin + '/'; } catch { return ''; } })();
+  const res = await nativeFetchHtml(pageUrl, referer);
+  return parseEpisodeHtml(res.html, res.url || pageUrl);
+}
+
 const JUJUTSU_RE = /jujutsu/i;
 const isJujutsu = (a = {}) => JUJUTSU_RE.test(`${a.title || ''} ${a.slug || ''} ${a.id || ''}`);
 const dropJujutsu = (list = []) => (Array.isArray(list) ? list : []).filter(a => a && !isJujutsu(a));
 const PLACEHOLDER = 'data:image/svg+xml;utf8,' + encodeURIComponent('<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 300 450"><rect width="300" height="450" fill="#15151c"/><text x="150" y="230" fill="#5a5a6a" font-family="sans-serif" font-size="18" text-anchor="middle">Sem capa</text></svg>');
+
+/* ===== FIX: cadeia de fallback de capa ===== */
+let coverSeq = 0;
+const EAGER_LIMIT = 12;
+
+async function __coverFail(im) {
+  if (!im || im.dataset.dead) return;
+  const step = Number(im.dataset.step || 0) + 1;
+  im.dataset.step = String(step);
+
+  const proxy = im.dataset.proxy || '';
+  if (step === 1 && proxy && im.src !== proxy) { im.src = proxy; return; }
+
+  if (step <= 2) {
+    const alt = await getPosterFallback(im.dataset.title || '');
+    if (alt) { im.dataset.step = '9'; im.src = alt; return; }
+  }
+
+  im.dataset.dead = '1';
+  const cardEl = im.closest('.card');
+  const inHome = cardEl && (cardEl.closest('#latest') || cardEl.closest('#added') || cardEl.closest('#top') || cardEl.closest('#catalog'));
+  if (inHome) cardEl.remove();
+  else { im.style.visibility = 'hidden'; im.removeAttribute('src'); }
+}
+window.__coverFail = __coverFail;
 
 /* FIX: 6 servidores — ordem inicial só como fallback; a real vem de /api/sources */
 const DEFAULT_SOURCES = [
@@ -357,7 +461,7 @@ function card(a, ep, srcOverride) {
   const subtitle = esc([a.type, a.year].filter(Boolean).join(' • '));
   const coverUrl = c ? (c.startsWith('http') ? esc(c) : img(c)) : PLACEHOLDER;
   el.innerHTML = `${ep ? `<span class="ep">EP ${esc(ep)}</span>` : ''}
-    <img loading="lazy" src="${coverUrl}" alt="${titleEsc}" onerror="this.onerror=null; getPosterFallback('${titleEsc}').then(u=>{this.src=u||'${PLACEHOLDER}'});">
+    <img loading="${coverSeq++ < EAGER_LIMIT ? 'eager' : 'lazy'}" src="${coverUrl}" alt="${titleEsc}" data-direct="${c && c.startsWith('http') ? esc(c) : ''}" data-proxy="${esc(c ? img(c) : '')}" data-title="${titleEsc}" decoding="async" referrerpolicy="no-referrer" onerror="__coverFail(this)">
     <div class="pl"><span>${ICONS.play}</span></div>
     <div class="cap"><b>${titleEsc}</b><small>${subtitle}</small></div>`;
   if (!c) {
@@ -377,7 +481,7 @@ function extCard(m, onPick) {
   el.href = '#';
   const titleEsc = esc(m.title || '');
   el.innerHTML = `<span class="ep">Externo</span>
-    <img loading="lazy" src="${esc(m.cover || PLACEHOLDER)}" alt="${titleEsc}" onerror="this.onerror=null; this.src='${PLACEHOLDER}';">
+    <img loading="lazy" src="${esc(m.cover || PLACEHOLDER)}" alt="${titleEsc}" data-title="${titleEsc}" decoding="async" referrerpolicy="no-referrer" onerror="__coverFail(this)">
     <div class="cap"><b>${titleEsc}</b><small>${esc([m.type, m.year].filter(Boolean).join(' • ') || 'Jikan')}</small></div>`;
   el.onclick = (e) => { e.preventDefault(); onPick(m); };
   return el;
@@ -455,7 +559,7 @@ if (document.body.dataset.page === 'home') {
     let c = cover(a);
     const titleEsc = esc(a.title || '');
     const coverUrl = c ? (c.startsWith('http') ? esc(c) : img(c)) : '';
-    $('#hero').innerHTML = `${coverUrl ? `<img src="${coverUrl}" alt="" onerror="this.onerror=null; getPosterFallback('${titleEsc}').then(u=>{if(u)this.src=u});">` : ''}
+    $('#hero').innerHTML = `${coverUrl ? `<img src="${coverUrl}" alt="" loading="eager" decoding="async" referrerpolicy="no-referrer" data-title="${titleEsc}" data-proxy="${esc(c ? img(c) : '')}" onerror="__coverFail(this)">` : ''}
       <div class="inner">
         <div class="chips"><span class="chip red">Em destaque</span>
           ${a.type ? `<span class="chip">${esc(a.type)}</span>` : ''}
@@ -866,7 +970,7 @@ if (document.body.dataset.page === 'home') {
       el.className = 'card';
       el.href = '#';
       const coverSrc = m.cover ? (m.cover.startsWith('http') ? esc(m.cover) : img(m.cover)) : '';
-      el.innerHTML = `${coverSrc ? `<img loading="lazy" src="${coverSrc}" alt="${titleEsc}" onerror="this.onerror=null; getPosterFallback('${titleEsc}').then(u=>{if(u)this.src=u});">` : '<div style="aspect-ratio:2/3;background:#1b1b22"></div>'}
+      el.innerHTML = `${coverSrc ? `<img loading="lazy" src="${coverSrc}" alt="${titleEsc}" data-title="${titleEsc}" decoding="async" referrerpolicy="no-referrer" onerror="__coverFail(this)">` : '<div style="aspect-ratio:2/3;background:#1b1b22"></div>'}
         ${m.score ? `<span class="ep">${ICONS.star} ${Number(m.score).toFixed(1)}</span>` : ''}
         <div class="cap"><b>${titleEsc}</b><small>${esc(m.type || m.day || m.year || '')}</small></div>`;
       el.onclick = async (e) => {
@@ -967,7 +1071,9 @@ if (document.body.dataset.page === 'home') {
     $$('[data-pref-srv]', box).forEach((b, idx) => {
       const s = list[idx];
       if (!s) return;
-      b.innerHTML = `<b>${idx + 1}.</b> ${esc(s.name)} <em data-up style="margin-left:6px">↑</em><em data-down style="margin-left:2px">↓</em>`;
+      /* FIX: rótulo exibido vira serveN; id/valor/ordem continuam iguais */
+      b.innerHTML = `<b>${idx + 1}.</b> serve${idx + 1} <em data-up style="margin-left:6px">↑</em><em data-down style="margin-left:2px">↓</em>`;
+      b.title = s.name;
       b.classList.toggle('on', idx === 0);
       b.onclick = (e) => {
         const up = e.target.closest('[data-up]');
@@ -1273,7 +1379,7 @@ if (document.body.dataset.page === 'detail') {
         const imgUrl = c.character?.images?.jpg?.image_url || '';
         const name = c.character?.name || 'Personagem';
         const role = c.role || '';
-        el.innerHTML = `${imgUrl ? `<img loading="lazy" src="${esc(imgUrl)}" alt="${esc(name)}">` : ''}<b>${esc(name)}</b><small>${esc(role)}</small>`;
+        el.innerHTML = `${imgUrl ? `<img loading="lazy" decoding="async" referrerpolicy="no-referrer" src="${esc(imgUrl)}" alt="${esc(name)}">` : ''}<b>${esc(name)}</b><small>${esc(role)}</small>`;
         g.appendChild(el);
       });
       $('#tab-chars').appendChild(g);
@@ -1584,26 +1690,46 @@ if (document.body.dataset.page === 'player') {
     return true;
   }
 
-  /* FIX: percorre a fila priorizada inteira, não só 3 fontes fixas */
+  /* FIX: percorre a fila priorizada inteira; no app o HTML vem da ponte nativa
+     (token fresco), com a API do Render apenas como fallback */
   async function resolveStreamWithFallback() {
     const queue = await resolveQueue(source);
     for (const s of queue) {
       const src = s.id;
+      let d = null;
       try {
         const qs = new URLSearchParams({ source: src, audio, season: String(season), n: String(ep) }).toString();
-        const d = await jsonFresh(`${API}/api/streams/${encodeURIComponent(slug)}/${ep}?${qs}&_t=${Date.now()}`, 18000);
-        if (!d || d.ok === false) continue;
-        const list = (d.sources || d.streams || []).filter(x => (x.url || x.proxyUrl) && !isSiteAnimePage(x.url || x.proxyUrl) && !isJunkMedia(x.url || x.proxyUrl));
-        const validIframes = (d.iframes || []).filter(u => u && !isSiteAnimePage(u));
-        const blogger = validIframes.find(u => isBloggerEmbed(u));
-        const embedUrl = unwrapOEmbed(blogger || (!isSiteAnimePage(d.iframe) ? d.iframe : null) || validIframes[0] || null);
-        if (list.length || embedUrl) {
-          source = src;
-          store.set('source', source);
-          updateServerButtons();
-          return { d, list, embedUrl, blogger: Boolean(blogger) };
-        }
-      } catch {}
+        d = await jsonFresh(`${API}/api/streams/${encodeURIComponent(slug)}/${ep}?${qs}&_t=${Date.now()}`, 18000);
+      } catch { d = null; }
+      if (d && d.ok === false) d = null;
+
+      let native = null;
+      const pageUrl = d && d.pageUrl ? String(d.pageUrl) : '';
+      if (pageUrl && hasNativeScraper()) {
+        try { native = await scrapeEpisode(pageUrl); } catch {}
+      }
+
+      const apiList = ((d && (d.sources || d.streams)) || [])
+        .filter(x => x && (x.url || x.proxyUrl))
+        .filter(x => {
+          const u = x.url || x.proxyUrl;
+          return !isSiteAnimePage(u) && !isJunkMedia(u) && !OMIT_RE.test(u);
+        });
+      const apiIframes = (((d && d.iframes) || []).concat(d && d.iframe ? [d.iframe] : []))
+        .filter(u => u && !isSiteAnimePage(u) && !OMIT_RE.test(u));
+
+      const iframes = [...((native && native.iframes) || []), ...apiIframes];
+      const nativeList = ((native && native.direct) || []).map(url => ({ url, quality: 'HD' }));
+      const list = [...nativeList, ...apiList];
+      const blogger = iframes.find(u => isBloggerEmbed(u)) || null;
+      const embedUrl = unwrapOEmbed(blogger || iframes[0] || null);
+
+      if (!blogger && !embedUrl && !list.length) continue;
+
+      source = src;
+      store.set('source', source);
+      updateServerButtons();
+      return { d: d || {}, list, embedUrl, blogger: Boolean(blogger) };
     }
     return null;
   }
@@ -1832,7 +1958,7 @@ if (document.body.dataset.page === 'player') {
     $$('[data-source-idx]', box).forEach((b, idx) => {
       const sObj = order[idx];
       if (!sObj) return;
-      b.textContent = `Servidor ${idx + 1}`;
+      b.textContent = `${idx + 1}.serve${idx + 1}`;
       b.title = sObj.name;
       b.classList.toggle('on', sObj.id === source);
       b.onclick = () => {

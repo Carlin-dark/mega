@@ -4,12 +4,13 @@
     name=":"
     type="APP"
     maven=":mega-anime:unspecified"
-    agpVersion="8.13.2"
+    agpVersion="9.5.2"
     buildFolder="build"
-    bootClassPath="C:\Users\konoz\AppData\Local\Android\Sdk\platforms\android-34\android.jar;C:\Users\konoz\AppData\Local\Android\Sdk\build-tools\35.0.0\core-lambda-stubs.jar"
+    bootClassPath="C:\Users\konoz\AppData\Local\Android\Sdk\platforms\android-34\android.jar;C:\Users\konoz\AppData\Local\Android\Sdk\build-tools\36.0.0\core-lambda-stubs.jar"
     javaSourceLevel="17"
     compileTarget="android-34"
-    neverShrinking="true">
+    neverShrinking="true"
+    highlightGradualR8Api="false">
   <lintOptions
       abortOnError="true"
       absolutePaths="true"

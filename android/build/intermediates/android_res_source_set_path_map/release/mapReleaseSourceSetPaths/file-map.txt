@@ -1,0 +1,9 @@
+com.megaanime.app-pngs-0 C:\Users\konoz\OneDrive\Documentos\anime site\mega-anime\android\build\generated\res\pngs\release
+com.megaanime.app-resValues-1 C:\Users\konoz\OneDrive\Documentos\anime site\mega-anime\android\build\generated\res\resValues\release
+com.megaanime.app-updated_navigation_xml-2 C:\Users\konoz\OneDrive\Documentos\anime site\mega-anime\android\build\generated\updated_navigation_xml\release
+com.megaanime.app-packageReleaseResources-3 C:\Users\konoz\OneDrive\Documentos\anime site\mega-anime\android\build\intermediates\incremental\release\packageReleaseResources\merged.dir
+com.megaanime.app-packageReleaseResources-4 C:\Users\konoz\OneDrive\Documentos\anime site\mega-anime\android\build\intermediates\incremental\release\packageReleaseResources\stripped.dir
+com.megaanime.app-release-5 C:\Users\konoz\OneDrive\Documentos\anime site\mega-anime\android\build\intermediates\merged_res\release\mergeReleaseResources
+com.megaanime.app-main-6 C:\Users\konoz\OneDrive\Documentos\anime site\mega-anime\android\src\main\res
+com.megaanime.app-release-7 C:\Users\konoz\OneDrive\Documentos\anime site\mega-anime\android\src\release\res
+gradleHome-0 C:\Users\konoz\.gradle

@@ -66,16 +66,21 @@ function fixRef(list) {
 }
 
 /* ---------- cards ---------- */
-const CARD_RE = /<a\b[^>]+href="(?:\/anime\/)([^"?#]+)"[^>]*>([\s\S]{0,800}?)<\/a>/gi;
+const CARD_RE = /<a\b[^>]*?href=["']?(?:\/anime\/)([^"'\s?#]+)["']?[^>]*>([\s\S]{0,1000}?)<\/a>/gi;
 
 function coverFrom(inner) {
   const next = inner.match(/\/_next\/image\?url=([^"'&\s]+)/);
   if (next) {
     try { return decodeURIComponent(next[1]); } catch {}
   }
-  const abs = inner.match(/(?:src|data-src|data-lazy-src)="(https?:\/\/[^"]+?\.(?:jpg|jpeg|png|webp|avif)[^"]*)"/i);
+  const abs = inner.match(/(?:src|data-src|data-lazy-src|data-original)="(https?:\/\/[^"]+?\.(?:jpg|jpeg|png|webp|avif)[^"]*)"/i);
   if (abs?.[1]) return abs[1];
-  const rel = inner.match(/(?:src|data-src|data-lazy-src)="(\/[^"]+?\.(?:jpg|jpeg|png|webp|avif)[^"]*)"/i);
+  const srcset = inner.match(/srcset="([^"]+)"/i);
+  if (srcset?.[1]) {
+    const first = srcset[1].split(',')[0].trim().split(/\s+/)[0];
+    if (first) return first.startsWith('http') ? first : absUrl(first, BASE);
+  }
+  const rel = inner.match(/(?:src|data-src|data-lazy-src|data-original)="(\/[^"]+?\.(?:jpg|jpeg|png|webp|avif)[^"]*)"/i);
   return rel?.[1] ? absUrl(rel[1], BASE) : null;
 }
 
@@ -270,7 +275,13 @@ export async function anime(slug) {
     source: meta.id,
     slug: a.slug || root,
     title: titulo,
-    poster: decodeNextImage(a.cover || '') || absUrl(html.match(/property="og:image"\s+content="([^"]*)"/)?.[1], BASE) || null,
+    poster: decodeNextImage(a.cover || '')
+      || absUrl(html.match(/property="og:image"\s+content="([^"]*)"/i)?.[1], BASE)
+      || absUrl(html.match(/name="twitter:image"\s+content="([^"]*)"/i)?.[1], BASE)
+      || absUrl(html.match(/<meta[^>]+itemprop=["']image["'][^>]+content="([^"]*)"/i)?.[1], BASE)
+      || absUrl(html.match(/<link[^>]+rel=["']image_src["'][^>]+href="([^"]*)"/i)?.[1], BASE)
+      || absUrl(html.match(/poster="([^"]+)"/i)?.[1], BASE)
+      || null,
     banner: decodeNextImage(a.cover || '') || null,
     synopsis: sinopse,
     year: Number(a.year) || Number((html.match(/\b(19|20)\d{2}\b/) || [])[0]) || null,

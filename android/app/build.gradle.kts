@@ -15,6 +15,14 @@ android {
         resourceConfigurations += listOf("pt-rBR", "pt", "en")
     }
 
+    /* FIX: as fontes do módulo ficam em ../src/main (java, assets, res e manifesto) */
+    sourceSets["main"].apply {
+        manifest.srcFile("../src/main/AndroidManifest.xml")
+        java.srcDirs("src/main/java", "../src/main/java")
+        res.srcDirs("src/main/res", "../src/main/res")
+        assets.srcDirs("src/main/assets", "../src/main/assets")
+    }
+
     /* Assinatura é feita no diálogo do Android Studio
        (Build > Generate Signed App Bundle / APK), com V1 e V2 marcados. */
 
@@ -56,6 +64,12 @@ android {
     }
 }
 
+/* FIX: kotlin-stdlib-jdk7/jdk8 antigos duplicam classes com a stdlib 1.8.22 */
+configurations.all {
+    exclude(group = "org.jetbrains.kotlin", module = "kotlin-stdlib-jdk7")
+    exclude(group = "org.jetbrains.kotlin", module = "kotlin-stdlib-jdk8")
+}
+
 /* FIX: espelha web/ -> assets/web e copia assets/config.js antes de todo build */
 val syncWeb by tasks.registering(Exec::class) {
     workingDir = rootProject.file("..")
@@ -67,9 +81,10 @@ tasks.named("preBuild") {
     dependsOn(syncWeb)
 }
 
+/* FIX: lintVital quebra no Gradle 9 com AGP 8.5 (NoSuchMethodError em kotlin.sequences) */
+tasks.matching { it.name.startsWith("lintVital") }.configureEach { enabled = false }
+
 dependencies {
     implementation("androidx.appcompat:appcompat:1.7.0")
     implementation("androidx.webkit:webkit:1.11.0")
-    /* FIX: scraping nativo do HTML do episódio (NativeScraperBridge) */
-    implementation("com.squareup.okhttp3:okhttp:4.12.0")
 }

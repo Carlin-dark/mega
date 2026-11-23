@@ -1,8 +1,19 @@
 const UA =
   'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36';
 
+import * as http from 'node:http';
+import * as https from 'node:https';
+
+http.globalAgent.keepAlive = true;
+http.globalAgent.maxSockets = 50;
+http.globalAgent.keepAliveMsecs = 10000;
+
+https.globalAgent.keepAlive = true;
+https.globalAgent.maxSockets = 50;
+https.globalAgent.keepAliveMsecs = 10000;
+
 const cache = new Map();
-const DEFAULT_TTL = 60_000;
+const DEFAULT_TTL = 30_000;
 
 export function cacheGet(key) {
   const hit = cache.get(key);
