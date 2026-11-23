@@ -35,7 +35,7 @@
   <div class="logo"><i><svg viewBox="0 0 24 24"><path d="M8 5v14l11-7z"/></svg></i><span>MEGA <b>ANIME</b></span></div>
   <div class="poster" id="poster"></div>
   <h1 id="title">Abrindo…</h1>
-  <p class="sub" id="sub">Preparando o link</p>
+  <p class="sub" id="sub">Um amigo te mandou um anime. Escolha como assistir.</p>
   <div class="status" id="status"></div>
   <button class="btn primary" id="open">Abrir no app</button>
   <a class="btn ghost" id="site" href="https://carlin-dark.github.io/Mega-Anime/">Abrir no site</a>
@@ -48,7 +48,7 @@
   const SITE = 'https://carlin-dark.github.io/Mega-Anime/';
   const PKG = 'com.megaanime.app';
   const q = new URLSearchParams(location.search);
-  const source = q.get('source') || 'animesonline';
+  const source = q.get('source') || 'animesonlinecc';
   const slug = q.get('slug') || '';
   const season = q.get('season') || '';
   const ep = q.get('ep') || '';
@@ -59,45 +59,40 @@
 
   if (!slug) {
     $('#title').textContent = 'Link incompleto';
-    $('#sub').textContent = 'Faltou o anime no link. Abrindo o site…';
+    $('#sub').textContent = 'Faltou o anime neste link. Abrindo o site…';
     setTimeout(() => location.replace(SITE), 1200);
     return;
   }
 
   $('#title').textContent = pretty(slug);
-  $('#sub').textContent = 'Anime compartilhado no MEGA ANIME';
 
   /* título e capa (sem bloquear a abertura do app) */
   fetch(`${API}/api/anime/${encodeURIComponent(slug)}?source=${encodeURIComponent(source)}&_t=${Date.now()}`)
     .then((r) => r.json())
     .then((d) => {
       if (!d || d.error) return;
-      if (d.title) { $('#title').textContent = d.title; document.title = d.title + ' — MEGA ANIME'; }
+      if (d.title) {
+        $('#title').textContent = d.title;
+        $('#sub').textContent = `Um amigo te mandou ${d.title}. Escolha como assistir.`;
+        document.title = d.title + ' — MEGA ANIME';
+      }
       const cover = d.cover || d.poster;
       if (cover) $('#poster').innerHTML = `<img src="${API}/img?u=${encodeURIComponent(cover)}" alt="">`;
     })
     .catch(() => {});
 
-  const intentUrl = (function () {
+  const params = (function () {
     const p = new URLSearchParams();
     p.set('source', source);
     p.set('slug', slug);
     if (season) p.set('season', season);
     if (ep) p.set('ep', ep);
     if (audio) p.set('audio', audio);
-    const fallback = encodeURIComponent(`${SITE}share.html?${p.toString()}`);
-    return `intent://${ep ? 'player' : 'detail'}?${p.toString()}#Intent;scheme=megaanime;package=${PKG};S.browser_fallback_url=${fallback};end`;
+    return p.toString();
   })();
 
-  const appUrl = (function () {
-    const p = new URLSearchParams();
-    p.set('source', source);
-    p.set('slug', slug);
-    if (season) p.set('season', season);
-    if (ep) p.set('ep', ep);
-    if (audio) p.set('audio', audio);
-    return `megaanime://${ep ? 'player' : 'detail'}?${p.toString()}`;
-  })();
+  const intentUrl = `intent://${ep ? 'player' : 'detail'}?${params}#Intent;scheme=megaanime;package=${PKG};S.browser_fallback_url=${encodeURIComponent(`${SITE}share.html?${params}`)};end`;
+  const appUrl = `megaanime://${ep ? 'player' : 'detail'}?${params}`;
 
   let left = false;
   const leave = () => { left = true; };
@@ -106,18 +101,17 @@
 
   const openApp = () => {
     left = false;
-    $('#status').textContent = 'Tentando abrir o app…';
+    $('#status').textContent = 'Abrindo o MEGA ANIME…';
     try { location.href = intentUrl; } catch { location.href = appUrl; }
     setTimeout(() => {
       if (left || document.hidden) return;
-      $('#status').textContent = 'App não encontrado. Instale o app ou continue no site.';
+      $('#status').textContent = 'O app não abriu. Instale o app ou continue no site.';
     }, 1500);
   };
 
   $('#open').addEventListener('click', openApp);
   $('#site').href = `${SITE}?source=${encodeURIComponent(source)}&slug=${encodeURIComponent(slug)}`;
 
-  /* tentativa automática só no Android */
   if (/android/i.test(navigator.userAgent)) setTimeout(openApp, 250);
 })();
 </script>

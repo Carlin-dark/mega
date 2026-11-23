@@ -11,7 +11,9 @@ export function apiUrl(path = '') {
 }
 
 export const img = (u, alt = '') =>
-  u ? `<img loading="lazy" src="${apiUrl(`/img?u=${encodeURIComponent(u)}`)}" alt="${String(alt || '').replace(/"/g, '&quot;')}">` : '';
+  u
+    ? `<img loading="lazy" decoding="async" referrerpolicy="no-referrer" src="${apiUrl(`/img?u=${encodeURIComponent(u)}`)}" alt="${String(alt || '').replace(/"/g, '&quot;')}">`
+    : '';
 
 export function cardHTML(item, source) {
   const src = item.source || source || savedSource();
@@ -29,5 +31,4 @@ export function cardHTML(item, source) {
 export const skeletons = n =>
   Array.from({ length: n }, () => `<div class="skel"></div>`).join('');
 
-export function savedSource() { return localStorage.getItem('mega:source') || 'animesonline'; }
 export function saveSource(s) { localStorage.setItem('mega:source', s); }

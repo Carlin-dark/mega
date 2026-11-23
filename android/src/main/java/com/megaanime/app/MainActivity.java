@@ -27,6 +27,7 @@ public class MainActivity extends Activity {
     private WebChromeClient chrome;
     private View customView;
     private WebChromeClient.CustomViewCallback customCallback;
+    private NativeScraperBridge scraper;
 
     @SuppressLint("SetJavaScriptEnabled")
     @Override
@@ -55,6 +56,10 @@ public class MainActivity extends Activity {
 
         /* FIX: DownloadBridge recebe apenas a Activity */
         web.addJavascriptInterface(new DownloadBridge(this), "Android");
+
+        /* FIX: ponte de scraping nativo -> window.AndroidScraper */
+        scraper = new NativeScraperBridge(this, web);
+        web.addJavascriptInterface(scraper, "AndroidScraper");
 
         web.setWebViewClient(new WebViewClient() {
             @Override
@@ -130,6 +135,12 @@ public class MainActivity extends Activity {
         setIntent(intent);
         String target = fromIntent(intent);
         if (target != null) web.loadUrl(target);
+    }
+
+    @Override
+    protected void onDestroy() {
+        if (scraper != null) scraper.shutdown();
+        super.onDestroy();
     }
 
     private String fromIntent(Intent intent) {

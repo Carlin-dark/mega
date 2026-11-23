@@ -24,8 +24,8 @@ const PLACEHOLDER = 'data:image/svg+xml;utf8,' + encodeURIComponent('<svg xmlns=
 
 /* FIX: 6 servidores — ordem inicial só como fallback; a real vem de /api/sources */
 const DEFAULT_SOURCES = [
-  { id: 'animesonlinecc', name: 'Servidor 1' },
-  { id: 'animesonline', name: 'Servidor 2' },
+  { id: 'animesonline', name: 'Servidor 1' },
+  { id: 'animesonlinecc', name: 'Servidor 2' },
   { id: 'animefire', name: 'Servidor 3' },
   { id: 'betteranime', name: 'Servidor 4' },
   { id: 'animesroll', name: 'Servidor 5' },
@@ -64,12 +64,17 @@ function shareUrl(params = {}) {
 }
 
 async function copyShare(url, title) {
+  const name = String(title || '').trim();
+  const msg = name
+    ? `🎬 Assista "${name}" no MEGA ANIME\n${url}`
+    : `🎬 Assista no MEGA ANIME\n${url}`;
+
   if (navigator.share) {
-    try { await navigator.share({ title: title || 'MEGA ANIME', text: title || '', url }); return; }
+    try { await navigator.share({ title: name ? `${name} — MEGA ANIME` : 'MEGA ANIME', text: msg, url }); return; }
     catch (e) { if (e && e.name === 'AbortError') return; }
   }
-  try { await navigator.clipboard.writeText(url); toast('Link copiado'); }
-  catch { window.prompt('Copie o link:', url); }
+  try { await navigator.clipboard.writeText(msg); toast('Link copiado'); }
+  catch { window.prompt('Copie a mensagem:', msg); }
 }
 
 /* Robust Poster Fallback via Jikan API & AniList */
@@ -295,7 +300,7 @@ function normAnime(a) {
   });
   const flat = seasons.flatMap(s => s.episodes);
   return {
-    source: a?.source || store.get('source', 'animesonline'),
+    source: a?.source || store.get('source', 'animesonlinecc'),
     slug: a?.slug || '',
     title: a?.title || 'Sem título',
     cover: cover(a || {}),
@@ -343,7 +348,7 @@ function saveFile(url, name) {
 }
 
 function card(a, ep, srcOverride) {
-  const src = a.source || srcOverride || store.get('source', 'animesonline');
+  const src = a.source || srcOverride || store.get('source', 'animesonlinecc');
   const el = document.createElement('a');
   el.className = 'card';
   el.href = `detail.html?source=${encodeURIComponent(src)}&slug=${encodeURIComponent(a.slug)}`;
@@ -1364,8 +1369,9 @@ if (document.body.dataset.page === 'detail') {
   $('#like').onclick = () => { $('#like').classList.toggle('on'); toast('Curtido'); };
 
   $('#share').onclick = () => {
+    const title = data?.title || $('#title')?.textContent || String(slug || '').replace(/-/g, ' ');
     const url = shareUrl({ source, slug: data?.slug || slug, season: data ? season : '', audio });
-    copyShare(url, data?.title || $('#title')?.textContent || slug);
+    copyShare(url, title);
   };
 
   $('#more').onclick = () => {

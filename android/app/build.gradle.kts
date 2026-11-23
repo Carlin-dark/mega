@@ -70,4 +70,6 @@ tasks.named("preBuild") {
 dependencies {
     implementation("androidx.appcompat:appcompat:1.7.0")
     implementation("androidx.webkit:webkit:1.11.0")
+    /* FIX: scraping nativo do HTML do episódio (NativeScraperBridge) */
+    implementation("com.squareup.okhttp3:okhttp:4.12.0")
 }
