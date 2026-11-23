@@ -1,0 +1,64 @@
+<!doctype html>
+<html lang="pt-BR">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+<meta name="theme-color" content="#07070a">
+<title>Mega Anime — Player</title>
+<link rel="stylesheet" href="/css/style.css">
+<link rel="stylesheet" href="https://cdn.plyr.io/3.7.8/plyr.css">
+<script src="config.js" onerror="void 0"></script>
+</head>
+<body data-page="player">
+
+<header class="top">
+  <button class="icon-btn" id="back" aria-label="Voltar">
+    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="m15 18-6-6 6-6"/></svg>
+  </button>
+  <a class="logo" href="index.html"><i><svg viewBox="0 0 24 24" fill="currentColor" style="width:14px;height:14px"><path d="M8 5v14l11-7z"/></svg></i>Mega<b>Anime</b></a>
+  <span class="sp"></span>
+  <button class="icon-btn" id="srv" aria-label="Servidor"></button>
+</header>
+
+<div class="watch">
+  <div class="stage" id="stage"><p class="empty">Resolvendo</p></div>
+  <p class="ptitle" id="ptitle"></p>
+  <div class="ctrlbar">
+    <button class="btn dark" id="prev">
+      <svg viewBox="0 0 24 24" fill="currentColor"><path d="M6 5h2v14H6zm3.5 7L18 5v14z"/></svg> Anterior
+    </button>
+    <button class="btn" id="next">
+      Próximo <svg viewBox="0 0 24 24" fill="currentColor"><path d="M16 5h2v14h-2zM14.5 12 6 19V5z"/></svg>
+    </button>
+  </div>
+  <div class="ctrl" id="ctrl" style="padding:0 14px 10px">
+    <button class="tag" data-audio="leg">LEG</button>
+    <button class="tag" data-audio="dub">DUB</button>
+    <button class="tag" id="opts" type="button">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" style="width:13px;height:13px;vertical-align:-2px;margin-right:4px"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.6 1.6 0 0 0 .3 1.8l.1.1a2 2 0 1 1-2.8 2.8l-.1-.1a1.6 1.6 0 0 0-1.8-.3 1.6 1.6 0 0 0-1 1.5V21a2 2 0 1 1-4 0v-.1A1.6 1.6 0 0 0 9 19.4a1.6 1.6 0 0 0-1.8.3l-.1.1a2 2 0 1 1-2.8-2.8l.1-.1A1.6 1.6 0 0 0 4.6 15a1.6 1.6 0 0 0-1.5-1H3a2 2 0 1 1 0-4h.1A1.6 1.6 0 0 0 4.6 9a1.6 1.6 0 0 0-.3-1.8l-.1-.1a2 2 0 1 1 2.8-2.8l.1.1A1.6 1.6 0 0 0 9 4.6a1.6 1.6 0 0 0 1-1.5V3a2 2 0 1 1 4 0v.1a1.6 1.6 0 0 0 1 1.5 1.6 1.6 0 0 0 1.8-.3l.1-.1a2 2 0 1 1 2.8 2.8l-.1.1a1.6 1.6 0 0 0-.3 1.8V9a1.6 1.6 0 0 0 1.5 1H21a2 2 0 1 1 0 4h-.1a1.6 1.6 0 0 0-1.5 1z"/></svg>Opções
+    </button>
+  </div>
+  <div class="qbox" id="qbox"></div>
+  <div class="strip" id="strip"></div>
+</div>
+
+<div class="overlay" id="overlay">
+  <button class="dim-close" id="dim" aria-label="Fechar"></button>
+  <div class="sheet">
+    <h4>Reprodução</h4>
+    <div class="box">
+      <div><b>Áudio</b><small>Trilha do episódio</small></div>
+      <div class="ctrl" style="padding:0"><button class="tag" data-audio="leg">LEG</button><button class="tag" data-audio="dub">DUB</button></div>
+    </div>
+    <div class="box">
+      <div><b>Servidor</b><small>Player interno ou iframe</small></div>
+      <div class="ctrl" style="padding:0"><button class="tag" data-srv="native">Nativo</button><button class="tag" data-srv="iframe">Iframe</button></div>
+    </div>
+  </div>
+</div>
+
+<div class="toast" id="toast"></div>
+<script src="https://cdn.plyr.io/3.7.8/plyr.polyfilled.js"></script>
+<script src="script.js"></script>
+</body>
+</html>

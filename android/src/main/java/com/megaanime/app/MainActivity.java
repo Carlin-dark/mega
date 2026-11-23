@@ -109,7 +109,8 @@ public class MainActivity extends AppCompatActivity {
         }
     }
 
-    private void setImmersive(boolean on) {
+    @SuppressWarnings("deprecation")
+    public void setImmersive(boolean on) {
         View d = getWindow().getDecorView();
         if (on) {
             d.setSystemUiVisibility(

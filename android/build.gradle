@@ -16,7 +16,7 @@ android {
 
     sourceSets {
         main {
-            assets.srcDirs = ['src/main/assets', '../web', '../assets']
+            assets.srcDirs = ['src/main/assets']
         }
     }
 
@@ -44,4 +44,12 @@ android {
 dependencies {
     implementation 'androidx.appcompat:appcompat:1.7.0'
     implementation 'androidx.webkit:webkit:1.11.0'
+}
+
+configurations.all {
+    resolutionStrategy.eachDependency { details ->
+        if (details.requested.group == 'org.jetbrains.kotlin') {
+            details.useVersion '1.8.22'
+        }
+    }
 }

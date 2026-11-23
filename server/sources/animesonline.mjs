@@ -226,10 +226,33 @@ export async function anime(slug) {
 }
 
 export async function streams(slug, epId, audio = 'leg', season = 1) {
-  const id = encodeURIComponent(epId);
+  const rawId = String(epId || '').trim();
+  const id = encodeURIComponent(rawId);
   const foundIframes = [];
   const directSources = [];
   let pageUrl = `${BASE}/anime/${slug}?ep=${id}`;
+
+  const collectFromHtml = (html, baseUrl) => {
+    const unescaped = decodeEntities(String(html || ''))
+      .replace(/\\u0026/g, '&')
+      .replace(/\\\//g, '/');
+
+    for (const m of unescaped.matchAll(/<iframe[^>]+src=["']([^"']+)["']/gi)) {
+      const u = absUrl(m[1], baseUrl);
+      if (u && !isBlockedEmbed(u) && !isAnimePageUrl(u)) foundIframes.push(u);
+    }
+
+    for (const m of unescaped.matchAll(/(?:https?:)?\/\/www\.blogger\.com\/video\.g\?token=[A-Za-z0-9_=-]+/gi)) {
+      foundIframes.push(m[0].startsWith('http') ? m[0] : `https:${m[0]}`);
+    }
+
+    for (const m of unescaped.matchAll(/https?:\/\/[^"'\s<>\\]+(?:embed|player|video\.g|stream)[^"'\s<>\\]*/gi)) {
+      const u = absUrl(m[0], baseUrl);
+      if (u && !isBlockedEmbed(u) && !isAnimePageUrl(u)) foundIframes.push(u);
+    }
+
+    directSources.push(...extractDirectVideosFromText(unescaped, baseUrl));
+  };
 
   for (const b of BASES) {
     const candidates = [
@@ -240,19 +263,13 @@ export async function streams(slug, epId, audio = 'leg', season = 1) {
     ];
 
     for (const url of candidates) {
-      const res = await fetchText(url, { referer: `${b}/anime/${slug}`, cacheTtl: 0 });
-      if (!res.ok) continue;
+      const res = await fetchText(url, { referer: `${b}/anime/${slug}`, cacheTtl: 0, timeout: 15000 });
+      if (!res.ok || !res.body) continue;
       pageUrl = url;
-      const html = res.body;
 
-      for (const m of html.matchAll(/<iframe[^>]+src="([^"]+)"/gi)) {
-        const u = absUrl(decodeEntities(m[1]), b);
-        if (u && !isBlockedEmbed(u) && !isAnimePageUrl(u)) foundIframes.push(u);
-      }
-      for (const m of html.matchAll(/(?:https?:)?\/\/www\.blogger\.com\/video\.g\?token=([A-Za-z0-9_-]+)/g)) {
-        foundIframes.push(`https://www.blogger.com/video.g?token=${m[1]}`);
-      }
-      directSources.push(...extractDirectVideosFromText(html, url));
+      collectFromHtml(res.body, b);
+      const rsc = readRsc(res.body);
+      if (rsc) collectFromHtml(rsc, b);
 
       if (foundIframes.length || directSources.length) break;
     }
@@ -266,7 +283,7 @@ export async function streams(slug, epId, audio = 'leg', season = 1) {
   return {
     source: meta.id,
     slug,
-    episode: epId,
+    episode: rawId,
     audio,
     season,
     pageUrl,
