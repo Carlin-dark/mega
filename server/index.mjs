@@ -59,6 +59,51 @@ const normTitle = (s = '') =>
     .replace(/[^a-z0-9]+/g, ' ')
     .trim();
 
+/* ===== cache de memória curto (detalhe, pool de trending) ===== */
+const memCache = new Map();
+const cacheGet = (key, maxAge) => {
+  const hit = memCache.get(key);
+  if (!hit) return null;
+  return { v: hit.v, t: hit.t, fresh: Date.now() - hit.t < maxAge };
+};
+const cacheSet = (key, v) => {
+  memCache.set(key, { t: Date.now(), v });
+  if (memCache.size > 400) {
+    const oldest = [...memCache.entries()].sort((a, b) => a[1].t - b[1].t).slice(0, 100);
+    oldest.forEach(([k]) => memCache.delete(k));
+  }
+};
+
+const daySeed = () => Math.floor(Date.now() / 86_400_000);
+const rotate = (arr = [], by = 0) => {
+  if (!arr.length) return [];
+  const n = ((by % arr.length) + arr.length) % arr.length;
+  return arr.slice(n).concat(arr.slice(0, n));
+};
+
+/* FIX: pool de "Em Alta" — home + catálogo da fonte, com cache de 10 min.
+   Garante que a seção nunca dependa de um slice vazio da home. */
+async function trendingPool(src) {
+  const key = 'pool:' + src.meta.id;
+  const hit = cacheGet(key, 10 * 60_000);
+  if (hit?.fresh) return hit.v;
+
+  const out = [];
+  try {
+    const raw = await budget(Promise.resolve(src.home()), 8000);
+    (raw?.hero || []).forEach((i) => out.push(i));
+    (raw?.sections || []).forEach((sec) => (sec.items || []).forEach((i) => out.push(i)));
+  } catch {}
+  try {
+    const { items } = await budget(Promise.resolve(src.catalog(1)), 8000);
+    (items || []).forEach((i) => out.push(i));
+  } catch {}
+
+  const list = dedupe(out.map((i) => cardOf(i, src.meta.id)));
+  if (list.length) cacheSet(key, list);
+  return list;
+}
+
 app.get('/api/sources', (_req, res) => res.json({ default: DEFAULT_SOURCE, sources: listSources() }));
 
 app.get(['/api/home', '/api/home/:source'], async (req, res) => {
@@ -67,19 +112,64 @@ app.get(['/api/home', '/api/home/:source'], async (req, res) => {
 
   for (const src of order) {
     try {
-      const raw = await budget(Promise.resolve(src.home()), 18000);
-      const sections = (raw?.sections || []).map((sec) => ({
-        ...sec,
-        items: (sec.items || []).map((i) => cardOf(i, src.meta.id)),
-      }));
+      const raw = await budget(Promise.resolve(src.home()), 12000);
       const hero = (raw?.hero || []).map((i) => cardOf(i, src.meta.id));
-      if (hero.length || sections.some((s) => s.items?.length)) {
-        return ok(res, { source: src.meta.id, hero, sections }, 45);
+
+      const rawSections = (raw?.sections || [])
+        .map((sec) => ({
+          id: sec.id || 'latest',
+          title: sec.title || '',
+          items: (sec.items || []).map((i) => cardOf(i, src.meta.id)),
+        }))
+        .filter((sec) => sec.items.length);
+
+      const all = dedupe([...hero, ...rawSections.flatMap((sec) => sec.items)]);
+      if (!all.length) continue;
+
+      let latest = rawSections.find((sec) => sec.id === 'latest')?.items || [];
+      if (!latest.length) latest = all.slice(0, 24);
+
+      /* FIX: "Em Alta" nunca volta vazia — se a fonte não tiver a seção,
+         completa com home + catálogo rotacionados pelo dia. */
+      let top = rawSections.find((sec) => sec.id === 'top')?.items || [];
+      if (top.length < 8) {
+        const pool = dedupe([...all, ...(await budget(trendingPool(src), 12000).catch(() => []))]);
+        top = rotate(pool, daySeed()).slice(0, 24);
       }
+
+      const sections = [
+        { id: 'latest', title: 'Novos Episódios', items: latest },
+        { id: 'top', title: 'Em Alta', items: top },
+      ];
+
+      return ok(res, { source: src.meta.id, hero, sections }, 45);
     } catch {}
   }
 
   ok(res, { source: first.meta.id, hero: [], sections: [] }, 15);
+});
+
+/* FIX: rota dedicada de trending, independente da home */
+app.get(['/api/trending', '/api/trending/:source'], async (req, res) => {
+  const first = pick(req);
+  const key = 'trending:' + first.meta.id;
+  const hit = cacheGet(key, 10 * 60_000);
+  if (hit?.fresh) return ok(res, { source: first.meta.id, items: hit.v }, 600);
+
+  const order = [first, ...listSources().map((s) => getSource(s.id)).filter((s) => s.meta.id !== first.meta.id)];
+
+  for (const src of order) {
+    try {
+      const pool = await budget(trendingPool(src), 15000);
+      if (!pool || pool.length < 4) continue;
+      const items = rotate(pool, daySeed()).slice(0, 30);
+      cacheSet(key, items);
+      return ok(res, { source: src.meta.id, items }, 600);
+    } catch {}
+  }
+
+  if (hit) return ok(res, { source: first.meta.id, items: hit.v, stale: true }, 60);
+  ok(res, { source: first.meta.id, items: [] }, 30);
 });
 
 app.get(['/api/catalog', '/api/catalog/:source'], async (req, res) => {
@@ -94,6 +184,7 @@ app.get(['/api/catalog', '/api/catalog/:source'], async (req, res) => {
 });
 
 app.get(['/api/search', '/api/search/:source'], async (req, res) => {
+  res.set('cache-control', 'no-store');
   const q = String(req.query.q || '').trim();
   if (!q) return res.json({ results: [] });
 
@@ -103,15 +194,31 @@ app.get(['/api/search', '/api/search/:source'], async (req, res) => {
     : [...new Set([DEFAULT_SOURCE, ...listSources().map((x) => x.id)])].map((id) => getSource(id));
 
   const out = [];
-  // 10s por fonte; o cliente espera 15s, então nada é abortado no meio
+  /* 12s por fonte, sempre em paralelo — o cliente espera 20s */
   await Promise.all(targets.map(async (t) => {
     try {
-      const items = await budget(Promise.resolve(t.search(q)), 10000);
+      const items = await budget(Promise.resolve(t.search(q)), 12000);
       (items || []).forEach((i) => out.push(cardOf(i, t.meta.id)));
     } catch {}
   }));
 
-  ok(res, { query: q, results: dedupe(out) }, 30);
+  /* FIX: fallback de varredura no catálogo quando a busca da fonte falha/volta vazia */
+  let partial = false;
+  if (!out.length) {
+    partial = true;
+    const nq = normTitle(q);
+    await Promise.all(targets.map(async (t) => {
+      try {
+        const { items } = await budget(Promise.resolve(t.catalog(1)), 9000);
+        (items || []).forEach((i) => {
+          const n = normTitle(i.title || i.slug);
+          if (nq && (n.includes(nq) || nq.includes(n))) out.push(cardOf(i, t.meta.id));
+        });
+      } catch {}
+    }));
+  }
+
+  ok(res, { query: q, results: dedupe(out), partial }, 30);
 });
 
 app.get('/api/episodes-all', async (req, res) => {
@@ -176,18 +283,57 @@ app.get('/api/episodes-all', async (req, res) => {
   ok(res, { query: qTitle || slugHint, results: bundles }, 30);
 });
 
+/* FIX: detalhe com budget maior, cache e resolução de fonte NO SERVIDOR.
+   O cliente não precisa mais procurar slug em outra fonte (era o que estourava o timeout). */
+const DETAIL_TTL = 5 * 60_000;
+
+const detailOf = async (src, targetSlug) => {
+  const a = await budget(Promise.resolve(src.anime(targetSlug)), 25000);
+  const total = (a?.seasons || []).reduce((n, se) => n + (se.episodes?.length || 0), 0);
+  if (!a || (!a.title && !total)) throw new Error('detalhe vazio');
+  return {
+    ...a,
+    slug: a.slug || targetSlug,
+    source: src.meta.id,
+    poster: a.poster || a.cover || a.banner || null,
+    cover: a.poster || a.cover || a.banner || null,
+  };
+};
+
 app.get(['/api/anime/:slug', '/api/anime/:source/:slug'], async (req, res) => {
+  res.set('cache-control', 'no-store');
   const src = pick(req);
+  const targetSlug = String(req.params.slug || '');
+  const key = `anime:${src.meta.id}:${targetSlug}`;
+  const cached = cacheGet(key, DETAIL_TTL);
+
+  if (cached?.fresh) return res.json({ ...cached.v, cached: true });
+
   try {
-    const a = await budget(Promise.resolve(src.anime(req.params.slug)), 15000);
-    ok(res, {
-      ...a,
-      source: src.meta.id,
-      poster: a.poster || a.cover || a.banner || null,
-      cover: a.poster || a.cover || a.banner || null,
-    });
-  } catch (e) {
-    fail(res, e);
+    const a = await detailOf(src, targetSlug);
+    cacheSet(key, a);
+    return res.json(a);
+  } catch (firstErr) {
+    /* FIX: resolve em outras fontes aqui dentro, usando o título derivado do slug */
+    const q = normTitle(targetSlug.replace(/[-_]+/g, ' '));
+    const others = listSources().map((m) => getSource(m.id)).filter((s) => s.meta.id !== src.meta.id);
+
+    for (const alt of others) {
+      try {
+        const found = await budget(Promise.resolve(alt.search(q)), 9000).catch(() => []);
+        const match = (found || []).find((x) => {
+          const n = normTitle(x.title || x.slug);
+          return n === q || n.includes(q) || q.includes(n);
+        });
+        if (!match?.slug) continue;
+        const a = await detailOf(alt, match.slug);
+        cacheSet(`anime:${alt.meta.id}:${a.slug}`, a);
+        return res.json({ ...a, resolvedFrom: src.meta.id });
+      } catch {}
+    }
+
+    if (cached) return res.json({ ...cached.v, cached: true, stale: true });
+    fail(res, firstErr);
   }
 });
 

@@ -12,13 +12,13 @@ async function bootSearch() {
     sources = meta?.sources || [];
   } catch {}
   if (!sources.length) {
-    sources = [
-      { id: 'animesonline', name: 'AnimesOnline' },
-      { id: 'animefire', name: 'AnimeFire' },
-      { id: 'betteranime', name: 'BetterAnime' },
-      { id: 'animesroll', name: 'AnimesRoll' },
-      { id: 'anitube', name: 'AniTube' }
-    ];
+    allSources = meta?.sources || [
+  { id: 'animesonlinecc', name: 'AnimesOnlineCC' },
+  { id: 'animesonline', name: 'AnimesOnline' },
+  { id: 'animefire', name: 'AnimeFire' },
+  { id: 'betteranime', name: 'BetterAnime' },
+  { id: 'animesroll', name: 'AnimesRoll' },
+];
   }
 
   const promises = sources.map(s => fetch(apiUrl(`/api/search?q=${encodeURIComponent(q)}&source=${s.id}`)).then(r => r.json()).catch(() => null));

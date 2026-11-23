@@ -15,12 +15,18 @@ const isJunkMedia = (u = '') => {
 };
 const isBloggerEmbed = (u = '') => /blogger\.com\/video\.g|video\.g\?token=/i.test(String(u || ''));
 
+/* FIX: item sem capa quebrando a home */
+const JUJUTSU_RE = /jujutsu/i;
+const isJujutsu = (a = {}) => JUJUTSU_RE.test(`${a.title || ''} ${a.slug || ''} ${a.id || ''}`);
+const dropJujutsu = (list = []) => (Array.isArray(list) ? list : []).filter(a => a && !isJujutsu(a));
+const PLACEHOLDER = 'data:image/svg+xml;utf8,' + encodeURIComponent('<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 300 450"><rect width="300" height="450" fill="#15151c"/><text x="150" y="230" fill="#5a5a6a" font-family="sans-serif" font-size="18" text-anchor="middle">Sem capa</text></svg>');
+
 const DEFAULT_SOURCES = [
-  { id: 'animesonline', name: 'Servidor 1' },
-  { id: 'animefire', name: 'Servidor 2' },
-  { id: 'betteranime', name: 'Servidor 3' },
-  { id: 'animesroll', name: 'Servidor 4' },
-  { id: 'anitube', name: 'Servidor 5' }
+  { id: 'animesonlinecc', name: 'Servidor 1' },
+  { id: 'animesonline', name: 'Servidor 2' },
+  { id: 'animefire', name: 'Servidor 3' },
+  { id: 'betteranime', name: 'Servidor 4' },
+  { id: 'animesroll', name: 'Servidor 5' }
 ];
 
 const store = {
@@ -209,9 +215,9 @@ function card(a, ep, srcOverride) {
   const c = cover(a);
   const titleEsc = esc(a.title || '');
   const subtitle = esc([a.type, a.year].filter(Boolean).join(' • '));
-  const coverUrl = c ? (c.startsWith('http') ? esc(c) : img(c)) : '';
+  const coverUrl = c ? (c.startsWith('http') ? esc(c) : img(c)) : PLACEHOLDER;
   el.innerHTML = `${ep ? `<span class="ep">EP ${esc(ep)}</span>` : ''}
-    <img loading="lazy" src="${coverUrl}" alt="${titleEsc}" onerror="this.onerror=null; getPosterFallback('${titleEsc}').then(u=>{if(u) this.src=u;});">
+    <img loading="lazy" src="${coverUrl}" alt="${titleEsc}" onerror="this.onerror=null; getPosterFallback('${titleEsc}').then(u=>{this.src=u||'${PLACEHOLDER}'});">
     <div class="pl"><span>${ICONS.play}</span></div>
     <div class="cap"><b>${titleEsc}</b><small>${subtitle}</small></div>`;
   if (!c) {
@@ -243,6 +249,29 @@ async function jsonWithTimeout(url, ms = 5000) {
   }
 }
 const json = (u) => jsonWithTimeout(u, 15000);
+
+/* FIX: requisição fresca — sem HTML/token/URL de vídeo em cache */
+async function jsonFresh(url, ms = 14000) {
+  const controller = new AbortController();
+  const id = setTimeout(() => controller.abort(), ms);
+  try {
+    const r = await fetch(url, {
+      cache: 'no-store',
+      headers: { accept: 'application/json', 'cache-control': 'no-cache, no-store', pragma: 'no-cache' },
+      signal: controller.signal
+    });
+    clearTimeout(id);
+    const text = await r.text();
+    let data = null;
+    try { data = text ? JSON.parse(text) : null; } catch {}
+    if (!r.ok && data === null) throw new Error(`HTTP ${r.status}`);
+    if (data && data.error && !Array.isArray(data)) throw new Error(data.error);
+    return data;
+  } catch (e) {
+    clearTimeout(id);
+    throw e;
+  }
+}
 
 async function fetchSources() {
   try {
@@ -333,8 +362,9 @@ if (document.body.dataset.page === 'home') {
   }
 
   async function loadHome() {
-    const cachedHome = store.get('cache_home_' + currentSource);
-    if (cachedHome && cachedHome.length) {
+    /* FIX: Jujutsu Kaisen vem da API sem capa e quebra o visual da home */
+    const cachedHome = dropJujutsu(store.get('cache_home_' + currentSource) || []);
+    if (cachedHome.length) {
       heroPool = cachedHome.slice(0, 8);
       paintHero();
       startHero();
@@ -346,7 +376,7 @@ if (document.body.dataset.page === 'home') {
       $('#latest').innerHTML = '<p class="empty">Carregando episódios…</p>';
     }
 
-    const cont = store.get('continue', []);
+    const cont = dropJujutsu(store.get('continue', []));
     if (cont.length) {
       $('#continue-wrap').classList.remove('hide');
       $('#continue').innerHTML = '';
@@ -383,8 +413,9 @@ if (document.body.dataset.page === 'home') {
         }
       }
 
-      const uniq = [...new Map(list.map(a => [a.slug, a])).values()];
-      if (!uniq.length && !cachedHome) throw new Error('vazio');
+      /* FIX: filtro por título, slug e id antes de qualquer render */
+      const uniq = dropJujutsu([...new Map(list.map(a => [a.slug, a])).values()]);
+      if (!uniq.length && !cachedHome.length) throw new Error('vazio');
 
       if (uniq.length) {
         store.set('cache_home_' + currentSource, uniq);
@@ -403,7 +434,7 @@ if (document.body.dataset.page === 'home') {
         uniq.slice(0, 20).forEach(a => $('#added').appendChild(card(a, null, currentSource)));
       }
     } catch {
-      if (!cachedHome) failBox($('#latest'), 'Falha ao carregar. Tentar de novo.', loadHome);
+      if (!cachedHome.length) failBox($('#latest'), 'Falha ao carregar. Tentar de novo.', loadHome);
     }
   }
   loadHome();
@@ -412,7 +443,7 @@ if (document.body.dataset.page === 'home') {
     if (busy || done) return;
     busy = true;
     try {
-      const list = asList(await jsonWithTimeout(`${API}/api/catalog?page=${++page}&source=${encodeURIComponent(currentSource)}`, 5000));
+      const list = dropJujutsu(asList(await jsonWithTimeout(`${API}/api/catalog?page=${++page}&source=${encodeURIComponent(currentSource)}`, 5000)));
       if (!list.length) done = true;
       else list.forEach(a => $('#catalog').appendChild(card(a, null, currentSource)));
     } catch {}
@@ -933,7 +964,7 @@ if (document.body.dataset.page === 'detail') {
     toast('Preparando download…');
     try {
       const n = ep.number || 1;
-      const d = await json(`${API}/api/streams/${encodeURIComponent(slug)}/${n}?source=${encodeURIComponent(source)}&season=${season}&audio=${ep.audio}`);
+      const d = await jsonFresh(`${API}/api/streams/${encodeURIComponent(slug)}/${n}?source=${encodeURIComponent(source)}&season=${season}&audio=${ep.audio}&_t=${Date.now()}`);
       const list = (d.streams || d.sources || []).filter(s => s.url && !isSiteAnimePage(s.url) && !isJunkMedia(s.url));
       const best = list[list.length - 1];
       if (!best) return toast('Sem arquivo direto para baixar');
@@ -1175,7 +1206,8 @@ if (document.body.dataset.page === 'player') {
     for (const src of order) {
       try {
         const qs = new URLSearchParams({ source: src, audio, season: String(season), n: String(ep) }).toString();
-        const d = await jsonWithTimeout(`${API}/api/streams/${encodeURIComponent(slug)}/${ep}?${qs}`, 12000);
+        /* FIX: sempre fresco — cache: 'no-store' + anti-cache _t= (token/URL do vídeo são temporários) */
+        const d = await jsonFresh(`${API}/api/streams/${encodeURIComponent(slug)}/${ep}?${qs}&_t=${Date.now()}`, 14000);
         if (!d || d.ok === false) continue;
         const list = (d.sources || d.streams || []).filter(s => (s.url || s.proxyUrl) && !isSiteAnimePage(s.url || s.proxyUrl) && !isJunkMedia(s.url || s.proxyUrl));
         const validIframes = (d.iframes || []).filter(u => u && !isSiteAnimePage(u));
@@ -1185,7 +1217,7 @@ if (document.body.dataset.page === 'player') {
           source = src;
           store.set('source', source);
           updateServerButtons();
-          return { d, list, embedUrl };
+          return { d, list, embedUrl, blogger: Boolean(blogger) };
         }
       } catch {}
     }
@@ -1214,10 +1246,15 @@ if (document.body.dataset.page === 'player') {
         errorScreen('Episódio sem stream disponível em nenhum servidor. Tente outro áudio.');
         return;
       }
-      const { list, embedUrl } = resolved;
+      const { list, embedUrl, blogger } = resolved;
       lastEmbed = embedUrl || null;
       resolvedAt = Date.now();
 
+      /* FIX: quando existe embed do Blogger, ele reproduz de verdade — vai direto no iframe do stage */
+      if (embedUrl && blogger && server !== 'native' && mountFrame(embedUrl)) {
+        toast('Player do episódio carregado');
+        return;
+      }
       if (server === 'iframe' && embedUrl && mountFrame(embedUrl)) return;
 
       let ordered = list.slice().sort((a, b) => (Number(b.itag) || 0) - (Number(a.itag) || 0));

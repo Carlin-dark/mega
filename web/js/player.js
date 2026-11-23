@@ -13,6 +13,8 @@ let cardTimer = null;
 let cardShown = false;
 
 const LOAD_TIMEOUT = 12000;
+/* FIX: o servidor resolve HTML fresco e pode demorar; 15s abortava a resposta boa */
+const RESOLVE_TIMEOUT = 22000;
 const autoNextOn = () => (localStorage.getItem('ma:auto_next') || 'on') !== 'off';
 const autoFsOn = () => (localStorage.getItem('ma:auto_fs') || 'on') !== 'off';
 
@@ -171,7 +173,7 @@ async function resolveStream() {
   const qs = new URLSearchParams({ source, audio, season: String(season), n: String(current) }).toString();
 
   const ctrl = new AbortController();
-  const t = setTimeout(() => ctrl.abort(), 15000);
+  const t = setTimeout(() => ctrl.abort(), RESOLVE_TIMEOUT);
   let data = null;
   try {
     /* FIX: requisição fresca — sem HTML/token em cache (links expiram) */
@@ -183,6 +185,7 @@ async function resolveStream() {
     data = await r.json();
   } catch { data = null; } finally { clearTimeout(t); }
 
+  /* FIX: 404 do servidor é resposta válida (sem fonte), não erro de rede */
   if (!data) { errorScreen(); return; }
 
   const list = (data.sources || data.streams || []).filter((s) => (s.url || s.proxyUrl) && !isSiteAnimePage(s.url || s.proxyUrl));
