@@ -17,7 +17,14 @@ export const titleFromSlug = (slug = '') =>
 
 export function absUrl(u, base) {
   if (!u) return null;
-  try { return new URL(decodeEntities(String(u).trim()), base).toString(); } catch { return null; }
+  const raw = decodeEntities(String(u).trim()).replace(/\\\//g, '/');
+  if (!raw) return null;
+  try {
+    if (raw.startsWith('//')) return new URL('https:' + raw).toString();
+    return new URL(raw, base).toString();
+  } catch {
+    return null;
+  }
 }
 
 export const uniqueBy = (arr, key) => {

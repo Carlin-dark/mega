@@ -1,22 +1,25 @@
 import { fetchText } from '../lib/http.mjs';
 import { absUrl, cleanText, decodeEntities, titleFromSlug, uniqueBy } from '../lib/text.mjs';
 import { readRsc, readJsonKey } from '../lib/next.mjs';
-import { resolveStreams, isAnimePageUrl, isBlockedEmbed } from '../lib/stream.mjs';
+import { resolveStreams, extractDirectVideosFromText, isAnimePageUrl, isBlockedEmbed } from '../lib/stream.mjs';
 
-const BASE = 'https://animesonline.blue';
-const HEADERS = { referer: `${BASE}/` };
-
+const BASES = ['https://animesonline.blue', 'https://animesonline.cloud'];
+const BASE = BASES[0];
 const CARD_RE = /<a\b[^>]*href="([^"]*\/anime\/[^"?#]+)"[^>]*>([\s\S]*?)<\/a>/gi;
 
-function cover(inner) {
+function cover(inner, base) {
   const next = inner.match(/\/_next\/image\?url=([^"'&]+)/);
-  if (next) { try { return decodeURIComponent(next[1]); } catch {} }
+  if (next) {
+    try { return decodeURIComponent(next[1]); } catch {}
+  }
   const src = inner.match(/(?:src|data-src)="(https?:\/\/[^"]+?\.(?:jpg|jpeg|png|webp)[^"]*)"/i);
-  return src?.[1] ?? null;
+  if (src?.[1]) return src[1];
+  const rel = inner.match(/(?:src|data-src)="(\/[^"]+?\.(?:jpg|jpeg|png|webp)[^"]*)"/i);
+  return rel?.[1] ? absUrl(rel[1], base) : null;
 }
 
-function parseCard(inner, href) {
-  const abs = absUrl(href, BASE);
+function parseCard(inner, href, base) {
+  const abs = absUrl(href, base);
   if (!abs) return null;
   const slug = abs.split('/anime/')[1].replace(/[?#].*$/, '').replace(/\/+$/, '');
   if (!slug) return null;
@@ -28,7 +31,7 @@ function parseCard(inner, href) {
   return {
     slug,
     title,
-    poster: absUrl(cover(inner), BASE),
+    poster: absUrl(cover(inner, base), base),
     year: Number(text.match(/\b(19|20)\d{2}\b/)?.[0]) || null,
     episodes: Number(text.match(/(\d+)\s*eps?/i)?.[1]) || null,
     score: Number(text.match(/\b(\d(?:\.\d)?)\b\s*(?:\/\s*10)?/)?.[1]) || null,
@@ -36,20 +39,25 @@ function parseCard(inner, href) {
   };
 }
 
-export function parseCards(html) {
+export function parseCards(html, base = BASE) {
   const cards = [];
   for (const m of html.matchAll(CARD_RE)) {
-    const c = parseCard(m[2], m[1]);
+    const c = parseCard(m[2], m[1], base);
     if (c) cards.push(c);
   }
   return uniqueBy(cards, (c) => c.slug);
 }
 
-const SECTIONS = [
-  { id: 'latest', title: 'Ultimos Episodios', re: /[ÚU]ltimos\s+Epis[oó]dios/i },
-  { id: 'added', title: 'Animes Adicionados', re: /Animes\s+Adicionados|Adicionados\s+recentemente/i },
-  { id: 'top', title: 'Top 10', re: /Top\s*10/i },
-];
+async function fetchFromBases(paths, opts = {}) {
+  for (const b of BASES) {
+    for (const p of paths) {
+      const url = p.startsWith('http') ? p : `${b}${p}`;
+      const res = await fetchText(url, { referer: `${b}/`, ...opts });
+      if (res.ok && res.body) return { base: b, res };
+    }
+  }
+  return null;
+}
 
 export const meta = {
   id: 'animesonline',
@@ -93,71 +101,55 @@ function episodesFromHtml(html, slug) {
 }
 
 export async function home() {
-  const res = await fetchText(BASE, { ...HEADERS, cacheTtl: 45_000 });
-  if (!res.ok) throw new Error(`home ${res.status}`);
-  const html = res.body;
-
-  const marks = SECTIONS
-    .map((s) => ({ ...s, at: html.search(s.re) }))
-    .filter((s) => s.at >= 0)
-    .sort((a, b) => a.at - b.at);
-
+  const hit = await fetchFromBases(['/', '/home'], { cacheTtl: 45_000 });
+  if (!hit) throw new Error('home indisponivel');
+  const html = hit.res.body;
+  const all = parseCards(html, hit.base);
   const sections = [];
-  for (let i = 0; i < marks.length; i++) {
-    const start = marks[i].at;
-    const end = i + 1 < marks.length ? marks[i + 1].at : start + 40_000;
-    const items = parseCards(html.slice(start, end));
-    if (items.length) sections.push({ id: marks[i].id, title: marks[i].title, items: items.slice(0, 24) });
-  }
-
-  if (!sections.length) {
-    const all = parseCards(html);
-    if (all.length) sections.push({ id: 'added', title: 'Animes Adicionados', items: all.slice(0, 24) });
-  }
-
-  const pool = sections.flatMap((s) => s.items);
-  const hero = uniqueBy(pool, (c) => c.slug).slice(0, 5).map((c) => ({ ...c, banner: c.poster }));
-  return { hero, sections };
+  if (all.length) sections.push({ id: 'latest', title: 'Ultimos Episodios', items: all.slice(0, 24) });
+  if (all.length > 6) sections.push({ id: 'top', title: 'Em Alta', items: all.slice(6, 30) });
+  return { hero: all.slice(0, 5).map((c) => ({ ...c, banner: c.poster })), sections };
 }
 
 export async function catalog(page = 1) {
-  const url = page > 1 ? `${BASE}/animes?page=${page}` : `${BASE}/animes`;
-  const res = await fetchText(url, { ...HEADERS, cacheTtl: 60_000 });
-  if (!res.ok) throw new Error(`catalog ${res.status}`);
-  return { page, items: parseCards(res.body) };
+  const hit = await fetchFromBases([page > 1 ? `/animes?page=${page}` : '/animes', '/'], { cacheTtl: 60_000 });
+  if (!hit) throw new Error('catalog indisponivel');
+  return { page, items: parseCards(hit.res.body, hit.base) };
 }
 
 export async function search(q) {
-  const api = await fetchText(`${BASE}/api/search?q=${encodeURIComponent(q)}`, { ...HEADERS });
-  if (api.ok && api.body.trim().startsWith('{')) {
-    try {
-      const data = JSON.parse(api.body);
-      const list = data.results || data.animes || data.data || [];
-      if (Array.isArray(list) && list.length) {
-        return list.map((x) => ({
-          slug: x.slug || x.href?.split('/anime/')[1],
-          title: x.titulo || x.title || x.nome,
-          poster: absUrl(x.capa || x.cover || x.image, BASE),
-        })).filter((x) => x.slug);
-      }
-    } catch {}
-  }
-  for (const path of ['/search?q=', '/buscar?q=', '/animes?q=']) {
-    const res = await fetchText(BASE + path + encodeURIComponent(q), { ...HEADERS, cacheTtl: 30_000 });
-    if (!res.ok) continue;
-    const items = parseCards(res.body).filter((c) => c.title.toLowerCase().includes(q.toLowerCase()));
-    if (items.length) return items;
-    const any = parseCards(res.body);
-    if (any.length) return any;
+  const enc = encodeURIComponent(q);
+  for (const b of BASES) {
+    const api = await fetchText(`${b}/api/search?q=${enc}`, { referer: `${b}/` });
+    if (api.ok && api.body.trim().startsWith('{')) {
+      try {
+        const data = JSON.parse(api.body);
+        const list = data.results || data.animes || data.data || [];
+        if (Array.isArray(list) && list.length) {
+          return list.map((x) => ({
+            slug: x.slug || x.href?.split('/anime/')[1]?.replace(/[?#].*$/, ''),
+            title: x.titulo || x.title || x.nome,
+            poster: absUrl(x.capa || x.cover || x.image, b),
+          })).filter((x) => x.slug);
+        }
+      } catch {}
+    }
+
+    for (const p of [`/buscar?q=${enc}`, `/?s=${enc}`, `/search?q=${enc}`, `/animes?q=${enc}`]) {
+      const res = await fetchText(`${b}${p}`, { referer: `${b}/`, cacheTtl: 30_000 });
+      if (!res.ok) continue;
+      const items = parseCards(res.body, b);
+      if (items.length) return items;
+    }
   }
   return [];
 }
 
 export async function anime(slug) {
-  const url = `${BASE}/anime/${slug}`;
-  const res = await fetchText(url, { ...HEADERS, cacheTtl: 60_000 });
-  if (!res.ok) throw new Error(`anime ${res.status}`);
-  const html = res.body;
+  const hit = await fetchFromBases([`/anime/${slug}`, `/animes/${slug}`], { cacheTtl: 60_000 });
+  if (!hit) throw new Error('anime indisponivel');
+  const html = hit.res.body;
+  const base = hit.base;
   const rsc = readRsc(html);
 
   const og = (k) => decodeEntities(html.match(new RegExp(`property="og:${k}"\\s+content="([^"]*)"`))?.[1] || '');
@@ -199,7 +191,7 @@ export async function anime(slug) {
         id: idOf(e) ?? String(number),
         number,
         title: e.titulo || e.title || e.nome || `Episodio ${number}`,
-        thumb: absUrl(e.capa || e.thumb, BASE),
+        thumb: absUrl(e.capa || e.thumb, base),
         duration: e.tempos || e.duracao || null,
         audio: [idOf(e.leg) ? 'leg' : null, idOf(e.dub) ? 'dub' : null].filter(Boolean),
         ids: { leg: idOf(e.leg) ?? String(number), dub: idOf(e.dub) ?? String(number) },
@@ -221,8 +213,8 @@ export async function anime(slug) {
     source: meta.id,
     slug,
     title: titulo,
-    poster: absUrl(og('image'), BASE) || null,
-    banner: absUrl(og('image'), BASE) || null,
+    poster: absUrl(og('image'), base) || null,
+    banner: absUrl(og('image'), base) || null,
     synopsis: sinopse,
     year: Number((html.match(/"ano":\s*"?(\d{4})/) || [])[1]) || null,
     type: (rsc.match(/"tipo":"([^"]+)"/) || [])[1] || null,
@@ -235,49 +227,41 @@ export async function anime(slug) {
 
 export async function streams(slug, epId, audio = 'leg', season = 1) {
   const id = encodeURIComponent(epId);
-  const candidates = [
-    `${BASE}/anime/${slug}?ep=${id}&t=${season}${audio ? `&audio=${audio}` : ''}`,
-    `${BASE}/anime/${slug}?ep=${id}${audio ? `&audio=${audio}` : ''}`,
-    `${BASE}/anime/${slug}?ep=${id}`,
-    `${BASE}/anime/${slug}/episodio/${id}`,
-  ];
+  const foundIframes = [];
+  const directSources = [];
+  let pageUrl = `${BASE}/anime/${slug}?ep=${id}`;
 
-  const found = [];
-  let pageUrl = candidates[0];
+  for (const b of BASES) {
+    const candidates = [
+      `${b}/anime/${slug}?ep=${id}&t=${season}${audio === 'dub' ? '&audio=dub' : ''}`,
+      `${b}/anime/${slug}?ep=${id}${audio === 'dub' ? '&audio=dub' : ''}`,
+      `${b}/anime/${slug}?ep=${id}`,
+      `${b}/anime/${slug}/${id}`,
+    ];
 
-  for (const url of candidates) {
-    const res = await fetchText(url, { referer: `${BASE}/anime/${slug}`, cacheTtl: 0 });
-    if (!res.ok) continue;
-    const html = res.body;
-
-    for (const m of html.matchAll(/<iframe[^>]+src="([^"]+)"/gi)) {
-      const u = absUrl(decodeEntities(m[1]), BASE);
-      if (u && !isBlockedEmbed(u) && !isAnimePageUrl(u)) found.push(u);
-    }
-    for (const m of html.matchAll(/https?:\/\/[^"'\s\\]+videoplayback[^"'\s\\]*/gi)) {
-      found.push(m[0].replace(/\\u0026/g, '&'));
-    }
-    for (const m of html.matchAll(/(?:https?:)?\/\/www\.blogger\.com\/video\.g\?token=([A-Za-z0-9_-]+)/g)) {
-      found.push(`https://www.blogger.com/video.g?token=${m[1]}`);
-    }
-    for (const m of html.matchAll(/video\.g\\?\/?\?token=([A-Za-z0-9_-]+)/g)) {
-      found.push(`https://www.blogger.com/video.g?token=${m[1]}`);
-    }
-    for (const m of html.matchAll(/https?:\/\/[^"'\s\\]+\.(?:mp4|m3u8)[^"'\s\\]*/gi)) {
-      const u = m[0].replace(/\\u0026/g, '&').replace(/\\\//g, '/');
-      if (!isAnimePageUrl(u)) found.push(u);
-    }
-
-    if (found.length) {
+    for (const url of candidates) {
+      const res = await fetchText(url, { referer: `${b}/anime/${slug}`, cacheTtl: 0 });
+      if (!res.ok) continue;
       pageUrl = url;
-      break;
+      const html = res.body;
+
+      for (const m of html.matchAll(/<iframe[^>]+src="([^"]+)"/gi)) {
+        const u = absUrl(decodeEntities(m[1]), b);
+        if (u && !isBlockedEmbed(u) && !isAnimePageUrl(u)) foundIframes.push(u);
+      }
+      for (const m of html.matchAll(/(?:https?:)?\/\/www\.blogger\.com\/video\.g\?token=([A-Za-z0-9_-]+)/g)) {
+        foundIframes.push(`https://www.blogger.com/video.g?token=${m[1]}`);
+      }
+      directSources.push(...extractDirectVideosFromText(html, url));
+
+      if (foundIframes.length || directSources.length) break;
     }
+    if (foundIframes.length || directSources.length) break;
   }
 
-  const iframes = uniqueBy(found, (x) => x).filter((u) => !isAnimePageUrl(u));
-  const sources = await resolveStreams(iframes, pageUrl);
-  // Só expõe iframe se for embed de vídeo/player real (nunca página /anime/ do site)
-  const cleanEmbeds = iframes.filter((u) => !/animesonline\.blue\/anime\//i.test(u));
+  const iframes = uniqueBy(foundIframes, (x) => x).filter((u) => !isAnimePageUrl(u));
+  const resolved = await resolveStreams(iframes, pageUrl);
+  const sources = uniqueBy([...directSources, ...resolved], (s) => s.url);
 
   return {
     source: meta.id,
@@ -286,33 +270,10 @@ export async function streams(slug, epId, audio = 'leg', season = 1) {
     audio,
     season,
     pageUrl,
-    iframes: cleanEmbeds,
+    iframes,
     resolvedAt: Date.now(),
     sources,
   };
 }
 
-export async function calendar() {
-  const res = await fetchText(BASE, { ...HEADERS, cacheTtl: 120_000 });
-  if (!res.ok) throw new Error(`calendar ${res.status}`);
-  const rsc = readRsc(res.body);
-  const days = readJsonKey(rsc, 'days') || [];
-  const out = [];
-  for (const d of days) {
-    const day = d.dia || d.day || d.data || d.date || null;
-    const list = d.animes || d.items || d.eps || [];
-    for (const a of list) {
-      const slug = a.slug || a.href?.split('/anime/')[1]?.replace(/[?#].*$/, '');
-      if (!slug) continue;
-      out.push({
-        slug,
-        title: a.titulo || a.title || a.nome || titleFromSlug(slug),
-        cover: absUrl(a.capa || a.cover || a.imagem, BASE),
-        day,
-      });
-    }
-  }
-  return uniqueBy(out, (x) => x.slug);
-}
-
-export default { meta, home, catalog, search, anime, streams, calendar };
+export default { meta, home, catalog, search, anime, streams };

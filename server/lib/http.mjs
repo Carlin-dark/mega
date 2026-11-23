@@ -20,20 +20,30 @@ export function cacheSet(key, value, ttl = DEFAULT_TTL) {
   return value;
 }
 
-function headersFor(referer, extra) {
+export function headersFor(url, referer, extra = {}) {
+  let origin = '';
+  try {
+    if (referer) origin = new URL(referer).origin;
+    else if (url) origin = new URL(url).origin;
+  } catch {}
+
   return {
     'user-agent': UA,
-    accept: 'text/html,application/xhtml+xml,application/json;q=0.9,*/*;q=0.8',
-    'accept-language': 'pt-BR,pt;q=0.9,en-US;q=0.7',
-    'sec-ch-ua': '"Chromium";v="131", "Not_A Brand";v="24"',
+    accept: 'text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8',
+    'accept-language': 'pt-BR,pt;q=0.9,en-US;q=0.8,en;q=0.7',
+    'cache-control': 'no-cache',
+    pragma: 'no-cache',
+    'sec-ch-ua': '"Google Chrome";v="131", "Chromium";v="131", "Not_A Brand";v="24"',
     'sec-ch-ua-mobile': '?0',
     'sec-ch-ua-platform': '"Windows"',
     'sec-fetch-dest': 'document',
     'sec-fetch-mode': 'navigate',
     'sec-fetch-site': referer ? 'same-origin' : 'none',
+    'sec-fetch-user': '?1',
     'upgrade-insecure-requests': '1',
     ...(referer ? { referer } : {}),
-    ...(extra || {}),
+    ...(origin ? { origin } : {}),
+    ...extra,
   };
 }
 
@@ -53,7 +63,7 @@ export async function fetchText(url, opts = {}) {
         signal: ctrl.signal,
         redirect: 'follow',
         cache: 'no-store',
-        headers: headersFor(referer, headers),
+        headers: headersFor(url, referer, headers),
       });
       const body = await res.text();
       const out = { ok: res.ok, status: res.status, url: res.url, body, headers: res.headers };
@@ -75,7 +85,7 @@ export async function fetchText(url, opts = {}) {
 export async function fetchJson(url, opts = {}) {
   const res = await fetchText(url, {
     ...opts,
-    headers: { accept: 'application/json', ...(opts.headers || {}) },
+    headers: { accept: 'application/json,text/plain,*/*', ...(opts.headers || {}) },
   });
   if (!res.ok) return { ok: false, status: res.status, data: null };
   try {

@@ -12,11 +12,10 @@ const ITAG = {
 export function isAnimePageUrl(url = '') {
   try {
     const u = new URL(url);
-    // Bloqueia páginas de catálogo/detalhes do site como se fossem player/stream
-    if (/\/anime\/[^/]+$/i.test(u.pathname) && !u.searchParams.get('ep')) return true;
+    if (/\/(anime|animes)\/[^/]+\/?$/i.test(u.pathname) && !u.searchParams.get('ep')) return true;
     return false;
   } catch {
-    return false;
+    return /\/(anime|animes)\/[^/?#]+\/?$/i.test(String(url));
   }
 }
 
@@ -31,11 +30,19 @@ export function expiresAtFrom(url = '') {
   return e ? Number(e[1]) * 1000 : null;
 }
 
-function normalizeUrl(raw, base) {
-  let u = decodeEntities(String(raw || '')).replace(/\\u0026/g, '&').replace(/\\\//g, '/').replace(/\\$/g, '').trim();
+export function normalizeMediaUrl(raw, base) {
+  let u = decodeEntities(String(raw || ''))
+    .replace(/\\u0026/g, '&')
+    .replace(/\\\//g, '/')
+    .replace(/\\$/g, '')
+    .trim();
   if (!u) return null;
   if (u.startsWith('//')) u = 'https:' + u;
-  try { return new URL(u, base).toString(); } catch { return null; }
+  try {
+    return new URL(u, base).toString();
+  } catch {
+    return null;
+  }
 }
 
 export function parseStreamingData(html, referer) {
@@ -49,7 +56,7 @@ export function parseStreamingData(html, referer) {
   const all = [...(data.formats || []), ...(data.adaptiveFormats || [])];
   const out = [];
   for (const f of all) {
-    const norm = normalizeUrl(f.url, referer);
+    const norm = normalizeMediaUrl(f.url, referer);
     if (!norm) continue;
     const mime = (f.mimeType || 'video/mp4').split(';')[0];
     if (!mime.startsWith('video/')) continue;
@@ -69,8 +76,37 @@ export function parseStreamingData(html, referer) {
   return out;
 }
 
+export function extractDirectVideosFromText(text = '', base = '') {
+  const found = [];
+  const patterns = [
+    /https?:\/\/[^"'\s<>\\]+googlevideo\.com\/videoplayback[^"'\s<>\\]*/gi,
+    /https?:\/\/[^"'\s<>\\]+aniplay\.online[^"'\s<>\\]+\.(?:mp4|m3u8)[^"'\s<>\\]*/gi,
+    /https?:\/\/[^"'\s<>\\]+\.(?:mp4|m3u8)[^"'\s<>\\]*/gi,
+  ];
+  for (const re of patterns) {
+    for (const m of String(text).matchAll(re)) {
+      const norm = normalizeMediaUrl(m[0], base);
+      if (!norm || isAnimePageUrl(norm)) continue;
+      const isHls = /\.m3u8(\?|$)/i.test(norm);
+      const itag = Number((norm.match(/[?&]itag=(\d+)/) || [])[1]) || 0;
+      const known = ITAG[itag];
+      found.push({
+        url: norm,
+        quality: known?.quality || 'auto',
+        label: known?.label || (isHls ? 'Auto (HLS)' : 'Auto'),
+        mime: isHls ? 'application/vnd.apple.mpegurl' : 'video/mp4',
+        hls: isHls,
+        itag,
+        referer: base || undefined,
+        expiresAt: expiresAtFrom(norm),
+      });
+    }
+  }
+  return found;
+}
+
 export async function resolvePlayer(rawUrl, referer) {
-  const url = normalizeUrl(rawUrl, referer);
+  const url = normalizeMediaUrl(rawUrl, referer);
   if (!url || isBlockedEmbed(url) || isAnimePageUrl(url)) return [];
 
   if (/blogger\.com\/video\.g|video\.g\?token=/.test(url)) {
@@ -91,11 +127,14 @@ export async function resolvePlayer(rawUrl, referer) {
   }
 
   if (/\.mp4(\?|$)|videoplayback/i.test(url)) {
+    const itag = Number((url.match(/[?&]itag=(\d+)/) || [])[1]) || 0;
+    const known = ITAG[itag];
     return [{
       url,
-      quality: 'auto',
-      label: 'Auto',
+      quality: known?.quality || 'auto',
+      label: known?.label || 'Auto',
       mime: 'video/mp4',
+      itag,
       referer,
       expiresAt: expiresAtFrom(url),
     }];
@@ -107,44 +146,13 @@ export async function resolvePlayer(rawUrl, referer) {
   const found = parseStreamingData(page.body, url);
   if (found.length) return found;
 
-  const hls = page.body.match(/https?:\/\/[^"'\s\\]+\.m3u8[^"'\s\\]*/i);
-  if (hls) {
-    const hlsUrl = normalizeUrl(hls[0], url);
-    if (hlsUrl) {
-      return [{
-        url: hlsUrl,
-        quality: 'auto',
-        label: 'Auto (HLS)',
-        mime: 'application/vnd.apple.mpegurl',
-        hls: true,
-        referer: url,
-        expiresAt: null,
-      }];
-    }
-  }
-
-  const mp4 = page.body.match(/https?:\/\/[^"'\s\\]+\.mp4[^"'\s\\]*/i);
-  if (mp4) {
-    const mp4Url = normalizeUrl(mp4[0], url);
-    if (mp4Url) {
-      return [{
-        url: mp4Url,
-        quality: 'auto',
-        label: 'Auto',
-        mime: 'video/mp4',
-        referer: url,
-        expiresAt: expiresAtFrom(mp4Url),
-      }];
-    }
-  }
-
-  return [];
+  return extractDirectVideosFromText(page.body, url);
 }
 
 export async function resolveStreams(iframes, referer) {
   const cleanIframes = (iframes || []).filter((u) => u && !isBlockedEmbed(u) && !isAnimePageUrl(u));
   const results = await Promise.all(
-    cleanIframes.slice(0, 5).map((u) => resolvePlayer(u, referer).catch(() => []))
+    cleanIframes.slice(0, 6).map((u) => resolvePlayer(u, referer).catch(() => []))
   );
   const flat = results.flat();
   const seen = new Set();
