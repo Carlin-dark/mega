@@ -16,6 +16,7 @@ import {
 import { isAnimePageUrl, isJunkMedia, isBloggerEmbed } from './lib/stream.mjs';
 import { freshHtml, extractEpisodeSources, episodeCandidates } from './lib/episode.mjs';
 import * as jikan from './sources/jikan.mjs';
+import { fetchExternalAnime } from './lib/external-apis.mjs';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const app = express();
@@ -330,6 +331,23 @@ const detailOf = async (src, targetSlug) => {
   const a = await budget(Promise.resolve(src.anime(targetSlug)), 25000);
   const total = (a?.seasons || []).reduce((n, se) => n + (se.episodes?.length || 0), 0);
   if (!a || (!a.title && !total)) throw new Error('detalhe vazio');
+
+  /* complemento de capa/metadados via APIs externas quando a fonte principal vier vazia */
+  if (!a.poster && !a.cover && a.title) {
+    try {
+      const ext = await fetchExternalAnime(a.title);
+      if (ext?.cover) {
+        a.poster = ext.cover;
+        a.cover = ext.cover;
+        if (!a.year && ext.year) a.year = ext.year;
+        if (!a.score && ext.score) a.score = ext.score;
+        if (!a.synopsis && ext.synopsis) a.synopsis = ext.synopsis;
+        if (!a.type && ext.type) a.type = ext.type;
+        if (!a.episodes && ext.episodes) a.episodes = ext.episodes;
+      }
+    } catch {}
+  }
+
   return {
     ...a,
     slug: a.slug || targetSlug,
@@ -667,6 +685,30 @@ app.get('/api/debug', async (req, res) => {
 });
 
 app.get('/api/health', (_req, res) => res.json({ ok: true, uptime: process.uptime() }));
+
+/* ===== APIs externas complementares (fallback em cascata) ===== */
+app.get('/api/external/anime', async (req, res) => {
+  const q = String(req.query.q || '').trim();
+  if (!q) return res.json({ results: [] });
+  try {
+    const data = await fetchExternalAnime(q);
+    res.json({ query: q, results: data ? [data] : [], source: data?.source || null });
+  } catch {
+    res.json({ query: q, results: [], source: null });
+  }
+});
+
+app.get('/api/external/poster', async (req, res) => {
+  const q = String(req.query.q || '').trim();
+  if (!q) return res.status(400).json({ error: 'informe ?q=' });
+  try {
+    const data = await fetchExternalAnime(q);
+    if (!data || !data.cover) return res.status(404).json({ error: 'capa nao encontrada' });
+    res.json({ url: data.cover, source: data.source, title: data.title });
+  } catch {
+    res.status(502).json({ error: 'falha ao buscar capa externa' });
+  }
+});
 
 app.use(express.static(path.join(__dirname, '..', 'web'), { extensions: ['html'] }));
 app.get('*', (_req, res) => res.sendFile(path.join(__dirname, '..', 'web', 'index.html')));
