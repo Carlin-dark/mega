@@ -3,6 +3,7 @@ package com.megaanime.app;
 import android.annotation.SuppressLint;
 import android.app.Activity;
 import android.content.Intent;
+import android.content.pm.ActivityInfo;
 import android.net.Uri;
 import android.os.Build;
 import android.os.Bundle;
@@ -23,6 +24,7 @@ public class MainActivity extends Activity {
 
     private WebView web;
     private FrameLayout root;
+    private WebChromeClient chrome;
     private View customView;
     private WebChromeClient.CustomViewCallback customCallback;
 
@@ -51,8 +53,8 @@ public class MainActivity extends Activity {
         }
         web.setBackgroundColor(0xFF0B0B10);
 
-        /* mantém a assinatura do DownloadBridge.java do projeto */
-        web.addJavascriptInterface(new DownloadBridge(this, web), "Android");
+        /* FIX: DownloadBridge recebe apenas a Activity */
+        web.addJavascriptInterface(new DownloadBridge(this), "Android");
 
         web.setWebViewClient(new WebViewClient() {
             @Override
@@ -66,7 +68,7 @@ public class MainActivity extends Activity {
             }
         });
 
-        web.setWebChromeClient(new WebChromeClient() {
+        chrome = new WebChromeClient() {
             @Override
             public void onShowCustomView(View view, CustomViewCallback cb) {
                 if (customView != null) { cb.onCustomViewHidden(); return; }
@@ -74,7 +76,7 @@ public class MainActivity extends Activity {
                 customCallback = cb;
                 root.addView(view, new FrameLayout.LayoutParams(-1, -1));
                 web.setVisibility(View.GONE);
-                getWindow().addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON);
+                enterImmersive();
             }
 
             @Override
@@ -83,14 +85,43 @@ public class MainActivity extends Activity {
                 root.removeView(customView);
                 customView = null;
                 web.setVisibility(View.VISIBLE);
-                getWindow().clearFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON);
                 if (customCallback != null) customCallback.onCustomViewHidden();
                 customCallback = null;
+                exitImmersive();
             }
-        });
+        };
+        web.setWebChromeClient(chrome);
 
         String target = fromIntent(getIntent());
         web.loadUrl(target != null ? target : ASSET_BASE + "index.html");
+    }
+
+    /** FIX: chamado por DownloadBridge.fullscreen() via window.Android.fullscreen() */
+    public void enterImmersive() {
+        runOnUiThread(() -> {
+            try { setRequestedOrientation(ActivityInfo.SCREEN_ORIENTATION_SENSOR); } catch (Exception ignored) {}
+            View decor = getWindow().getDecorView();
+            decor.setSystemUiVisibility(
+                    View.SYSTEM_UI_FLAG_LAYOUT_STABLE
+                            | View.SYSTEM_UI_FLAG_LAYOUT_HIDE_NAVIGATION
+                            | View.SYSTEM_UI_FLAG_LAYOUT_FULLSCREEN
+                            | View.SYSTEM_UI_FLAG_HIDE_NAVIGATION
+                            | View.SYSTEM_UI_FLAG_FULLSCREEN
+                            | View.SYSTEM_UI_FLAG_IMMERSIVE_STICKY);
+            getWindow().addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON);
+        });
+    }
+
+    public void exitImmersive() {
+        runOnUiThread(() -> {
+            View decor = getWindow().getDecorView();
+            decor.setSystemUiVisibility(
+                    View.SYSTEM_UI_FLAG_LAYOUT_STABLE
+                            | View.SYSTEM_UI_FLAG_LAYOUT_HIDE_NAVIGATION
+                            | View.SYSTEM_UI_FLAG_LAYOUT_FULLSCREEN);
+            getWindow().clearFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON);
+            try { setRequestedOrientation(ActivityInfo.SCREEN_ORIENTATION_PORTRAIT); } catch (Exception ignored) {}
+        });
     }
 
     @Override
@@ -101,7 +132,6 @@ public class MainActivity extends Activity {
         if (target != null) web.loadUrl(target);
     }
 
-    /** Converte intent/link externo em página local com os parâmetros preservados. */
     private String fromIntent(Intent intent) {
         if (intent == null) return null;
         Uri d = intent.getData();
@@ -139,31 +169,25 @@ public class MainActivity extends Activity {
         sb.append(key).append('=').append(Uri.encode(value));
     }
 
-    /** true = tratado aqui; false = o WebView carrega. */
     private boolean route(String url) {
         if (url == null) return false;
-
         if (url.startsWith("file://")) return false;
 
         if (url.startsWith("megaanime://")) {
-            Uri u = Uri.parse(url);
-            String target = fromIntent(new Intent(Intent.ACTION_VIEW, u));
+            String target = fromIntent(new Intent(Intent.ACTION_VIEW, Uri.parse(url)));
             if (target != null) { web.loadUrl(target); return true; }
             return false;
         }
 
         if (url.contains("/share.html")) {
-            Uri u = Uri.parse(url);
-            String target = fromIntent(new Intent(Intent.ACTION_VIEW, u));
+            String target = fromIntent(new Intent(Intent.ACTION_VIEW, Uri.parse(url)));
             if (target != null) { web.loadUrl(target); return true; }
         }
 
         if (url.startsWith("http")) {
             Uri u = Uri.parse(url);
             String host = u.getHost() == null ? "" : u.getHost().toLowerCase();
-            if (API_HOST.equals(host) || SITE_HOST.equals(host) || url.contains("/api/")) {
-                return false;
-            }
+            if (API_HOST.equals(host) || SITE_HOST.equals(host) || url.contains("/api/")) return false;
             try {
                 startActivity(new Intent(Intent.ACTION_VIEW, u));
                 return true;
@@ -178,8 +202,7 @@ public class MainActivity extends Activity {
     @Override
     public void onBackPressed() {
         if (customView != null) {
-            web.getSettings();
-            if (customCallback != null) customCallback.onCustomViewHidden();
+            chrome.onHideCustomView();
             return;
         }
         if (web != null && web.canGoBack()) {

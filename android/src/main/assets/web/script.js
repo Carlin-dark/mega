@@ -1,4 +1,4 @@
-/* Mega Anime — Refactored & Optimized with Jikan Fallback, Servidores 1-5, Fast Home, Calendar 2030 & Preferences */
+/* Mega Anime — Refactored & Optimized with Jikan Fallback, Servidores priorizados, Fast Home, Calendar 2030 & Preferences */
 const API = (window.API_BASE || 'https://mega-la8q.onrender.com').replace(/\/+$/, '');
 const SITE_BASE = 'https://carlin-dark.github.io/Mega-Anime/';
 const SHARE_BASE = SITE_BASE + 'share.html';
@@ -17,18 +17,19 @@ const isJunkMedia = (u = '') => {
 };
 const isBloggerEmbed = (u = '') => /blogger\.com\/video\.g|video\.g\?token=/i.test(String(u || ''));
 
-/* FIX: item sem capa quebrando a home */
 const JUJUTSU_RE = /jujutsu/i;
 const isJujutsu = (a = {}) => JUJUTSU_RE.test(`${a.title || ''} ${a.slug || ''} ${a.id || ''}`);
 const dropJujutsu = (list = []) => (Array.isArray(list) ? list : []).filter(a => a && !isJujutsu(a));
 const PLACEHOLDER = 'data:image/svg+xml;utf8,' + encodeURIComponent('<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 300 450"><rect width="300" height="450" fill="#15151c"/><text x="150" y="230" fill="#5a5a6a" font-family="sans-serif" font-size="18" text-anchor="middle">Sem capa</text></svg>');
 
+/* FIX: 6 servidores — ordem inicial só como fallback; a real vem de /api/sources */
 const DEFAULT_SOURCES = [
   { id: 'animesonlinecc', name: 'Servidor 1' },
   { id: 'animesonline', name: 'Servidor 2' },
   { id: 'animefire', name: 'Servidor 3' },
   { id: 'betteranime', name: 'Servidor 4' },
-  { id: 'animesroll', name: 'Servidor 5' }
+  { id: 'animesroll', name: 'Servidor 5' },
+  { id: 'anitube', name: 'Servidor 6' }
 ];
 
 const store = {
@@ -52,7 +53,7 @@ const ICONS = {
   site: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" style="width:13px;height:13px;margin-right:4px"><path d="M14 3h7v7"/><path d="M10 14 21 3"/><path d="M21 14v6a1 1 0 0 1-1 1H4a1 1 0 0 1-1-1V4a1 1 0 0 1 1-1h6"/></svg>'
 };
 
-/* ===== link público de compartilhamento (abre no site, que tenta abrir o app) ===== */
+/* ===== link público de compartilhamento ===== */
 function shareUrl(params = {}) {
   const q = new URLSearchParams();
   ['source', 'slug', 'season', 'ep', 'audio'].forEach((k) => {
@@ -63,12 +64,17 @@ function shareUrl(params = {}) {
 }
 
 async function copyShare(url, title) {
+  const name = String(title || '').trim();
+  const msg = name
+    ? `🎬 Assista "${name}" no MEGA ANIME\n${url}`
+    : `🎬 Assista no MEGA ANIME\n${url}`;
+
   if (navigator.share) {
-    try { await navigator.share({ title: title || 'MEGA ANIME', text: title || '', url }); return; }
+    try { await navigator.share({ title: name ? `${name} — MEGA ANIME` : 'MEGA ANIME', text: msg, url }); return; }
     catch (e) { if (e && e.name === 'AbortError') return; }
   }
-  try { await navigator.clipboard.writeText(url); toast('Link copiado'); }
-  catch { window.prompt('Copie o link:', url); }
+  try { await navigator.clipboard.writeText(msg); toast('Link copiado'); }
+  catch { window.prompt('Copie a mensagem:', msg); }
 }
 
 /* Robust Poster Fallback via Jikan API & AniList */
@@ -116,7 +122,7 @@ async function getPosterFallback(title) {
 }
 const getJikanCover = getPosterFallback;
 
-/* ===== Jikan como catálogo de apoio (busca e detalhe) ===== */
+/* ===== Jikan como catálogo de apoio ===== */
 const cleanTitle = (t = '') => String(t).replace(/\b(dub\w*|leg\w*|temporada\w*|\d+ª?|eps?\.?\s*\d+)\b/gi, '').trim();
 
 async function jikanSearch(q, limit = 12) {
@@ -203,7 +209,6 @@ const asList = (d) => {
 
 const cover = (a) => a.cover || a.poster || a.banner || null;
 
-/* FIX: rotação estável por dia (mesma ordem durante o dia, muda no dia seguinte) */
 const daySeed = () => Math.floor(Date.now() / 86400000);
 const rotateList = (arr = [], by = 0) => {
   if (!arr.length) return [];
@@ -215,6 +220,67 @@ const debounce = (fn, ms = 500) => {
   return (...args) => { clearTimeout(t); t = setTimeout(() => fn(...args), ms); };
 };
 const normText = (s = '') => String(s).toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g, '').replace(/[^a-z0-9]+/g, ' ').trim();
+
+/* ===== fila priorizada de servidores ===== */
+let sourceCache = [];
+
+async function fetchSources() {
+  try {
+    const r = await jsonWithTimeout(`${API}/api/sources?_t=${Date.now()}`, 6000);
+    const d = r;
+    if (Array.isArray(d?.sources) && d.sources.length) {
+      sourceCache = d.sources.map((s, i) => ({ id: s.id, name: s.name || `Servidor ${i + 1}` }));
+      return sourceCache;
+    }
+  } catch {}
+  return sourceCache.length ? sourceCache : DEFAULT_SOURCES;
+}
+
+function localOrder() {
+  const saved = store.get('srv_order', []);
+  const ids = saved.filter((id) => DEFAULT_SOURCES.some((s) => s.id === id));
+  DEFAULT_SOURCES.forEach((s) => { if (!ids.includes(s.id)) ids.push(s.id); });
+  return ids;
+}
+
+/* ordem final = fonte pedida primeiro, depois a prioridade salva, depois o resto */
+async function resolveQueue(preferredId) {
+  const list = await fetchSources();
+  const ids = list.map((s) => s.id);
+  const saved = localOrder().filter((id) => ids.includes(id));
+  const tail = ids.filter((id) => !saved.includes(id));
+  const ordered = [...new Set([preferredId, ...saved, ...tail])].filter(Boolean);
+  return ordered.map((id) => list.find((s) => s.id === id)).filter(Boolean);
+}
+
+async function savePriority(ids) {
+  const clean = [...new Set((ids || []).filter(Boolean))];
+  store.set('srv_order', clean);
+  if (clean[0]) store.set('source', clean[0]);
+  try {
+    await fetch(`${API}/api/priority`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ order: clean })
+    });
+  } catch {}
+}
+
+/* garante botões de servidor suficientes para todas as fontes */
+function syncSourceButtons(container, attr, count) {
+  if (!container) return;
+  const existing = $$(`[${attr}]`, container);
+  const base = existing[0];
+  for (let i = existing.length; i < count; i++) {
+    const b = document.createElement(base?.tagName === 'BUTTON' ? 'button' : 'span');
+    b.className = base?.className || 'tag';
+    if (b.tagName === 'BUTTON') b.type = 'button';
+    b.setAttribute(attr, String(i));
+    b.textContent = `Servidor ${i + 1}`;
+    container.appendChild(b);
+  }
+  $$(`[${attr}]`, container).forEach((b, i) => { if (i >= count) b.remove(); });
+}
 
 function normAnime(a) {
   const seasons = (Array.isArray(a?.seasons) ? a.seasons : []).map((s, i) => {
@@ -234,7 +300,7 @@ function normAnime(a) {
   });
   const flat = seasons.flatMap(s => s.episodes);
   return {
-    source: a?.source || store.get('source', 'animesonline'),
+    source: a?.source || store.get('source', 'animesonlinecc'),
     slug: a?.slug || '',
     title: a?.title || 'Sem título',
     cover: cover(a || {}),
@@ -282,7 +348,7 @@ function saveFile(url, name) {
 }
 
 function card(a, ep, srcOverride) {
-  const src = a.source || srcOverride || store.get('source', 'animesonline');
+  const src = a.source || srcOverride || store.get('source', 'animesonlinecc');
   const el = document.createElement('a');
   el.className = 'card';
   el.href = `detail.html?source=${encodeURIComponent(src)}&slug=${encodeURIComponent(a.slug)}`;
@@ -305,7 +371,6 @@ function card(a, ep, srcOverride) {
   return el;
 }
 
-/* card de resultado externo (Jikan) — ao clicar procura nas fontes */
 function extCard(m, onPick) {
   const el = document.createElement('a');
   el.className = 'card';
@@ -336,17 +401,13 @@ async function jsonWithTimeout(url, ms = 5000) {
   }
 }
 const json = (u) => jsonWithTimeout(u, 15000);
-
-/* FIX: detalhe e busca podem ser lentos (o servidor tem budget maior) */
 const jsonSlow = (u) => jsonWithTimeout(u, 30000);
 const jsonSearch = (u) => jsonWithTimeout(u, 30000);
 
-/* FIX: busca tolerante — nunca lança, sempre devolve algo (ou null) */
 async function jsonSoft(url, ms = 30000) {
   try { return await jsonWithTimeout(url, ms); } catch { return null; }
 }
 
-/* FIX: requisição fresca — sem HTML/token/URL de vídeo em cache */
 async function jsonFresh(url, ms = 14000) {
   const controller = new AbortController();
   const id = setTimeout(() => controller.abort(), ms);
@@ -369,17 +430,6 @@ async function jsonFresh(url, ms = 14000) {
   }
 }
 
-async function fetchSources() {
-  try {
-    const r = await jsonWithTimeout(`${API}/api/sources`, 4000);
-    const d = r;
-    if (Array.isArray(d?.sources) && d.sources.length) {
-      return d.sources.map((s, i) => ({ id: s.id, name: `Servidor ${i + 1}` }));
-    }
-  } catch {}
-  return DEFAULT_SOURCES;
-}
-
 const failBox = (box, msg, retry) => {
   box.innerHTML = `<p class="empty">${esc(msg)}</p>`;
   if (retry) {
@@ -396,7 +446,7 @@ const failBox = (box, msg, retry) => {
 /* ================= HOME ================= */
 if (document.body.dataset.page === 'home') {
   let heroPool = [], hi = 0, page = 1, busy = false, done = false;
-  let currentSource = store.get('source', 'animesonline');
+  let currentSource = store.get('source', 'animesonlinecc');
   let availableSources = DEFAULT_SOURCES;
 
   const paintHero = () => {
@@ -464,7 +514,6 @@ if (document.body.dataset.page === 'home') {
     list.forEach(a => el.appendChild(card(a, null, src)));
   };
 
-  /* FIX: "Em Alta" com preenchimento garantido — nunca deixa a seção vazia */
   function paintTop(primary = [], fallbackPool = []) {
     const el = $('#top');
     if (!el) return;
@@ -482,7 +531,6 @@ if (document.body.dataset.page === 'home') {
   }
 
   async function loadHome() {
-    /* FIX: Jujutsu Kaisen vem da API sem capa e quebra o visual da home */
     const cachedHome = dropJujutsu(store.get('cache_home_' + currentSource) || []);
     const cachedTop = dropJujutsu(store.get('cache_top_' + currentSource) || []);
     if (cachedHome.length) {
@@ -504,23 +552,25 @@ if (document.body.dataset.page === 'home') {
     }
 
     try {
-      /* FIX: timeouts compatíveis com o budget do servidor (5s abortava tudo) */
       const [sourcesRes, homeRes, topRes] = await Promise.allSettled([
         fetchSources(),
         jsonWithTimeout(`${API}/api/home?source=${encodeURIComponent(currentSource)}`, 15000),
         jsonWithTimeout(`${API}/api/trending?source=${encodeURIComponent(currentSource)}`, 12000)
       ]);
 
-      if (sourcesRes.status === 'fulfilled' && sourcesRes.value) {
+      if (sourcesRes.status === 'fulfilled' && sourcesRes.value?.length) {
         availableSources = sourcesRes.value;
+        if (!availableSources.some(s => s.id === currentSource)) {
+          currentSource = availableSources[0].id;
+          store.set('source', currentSource);
+        }
       }
 
       let list = [];
       let topList = [];
       if (homeRes.status === 'fulfilled' && homeRes.value) {
         const sections = homeRes.value.sections || [];
-        const latestSec = sections.find(s => s.id === 'latest');
-        list = dropJujutsu(latestSec?.items || asList(homeRes.value));
+        list = dropJujutsu(sections.find(s => s.id === 'latest')?.items || asList(homeRes.value));
         topList = dropJujutsu(sections.find(s => s.id === 'top')?.items || []);
       }
       if (topRes.status === 'fulfilled' && topRes.value) {
@@ -544,7 +594,6 @@ if (document.body.dataset.page === 'home') {
         }
       }
 
-      /* FIX: filtro por título, slug e id antes de qualquer render */
       const uniq = dropJujutsu([...new Map(list.map(a => [a.slug, a])).values()]);
       if (!uniq.length && !cachedHome.length) throw new Error('vazio');
 
@@ -583,7 +632,6 @@ if (document.body.dataset.page === 'home') {
     views.forEach(x => $('#view-' + x)?.classList.toggle('hide', x !== v));
     $$('.nav a').forEach(a => a.classList.toggle('on', a.dataset.tab === v));
 
-    /* FIX: header e barra de busca continuam visíveis na busca (antes sumiam e travavam a tela) */
     const showTop = v === 'home' || v === 'search';
     $('.top')?.classList.toggle('hide', !showTop);
     $('#searchbar')?.classList.toggle('hide', v !== 'search');
@@ -607,7 +655,7 @@ if (document.body.dataset.page === 'home') {
   };
   $('#btn-bell').onclick = () => { show('home'); toast('Novos episódios na Home'); };
 
-  /* ===== busca: agregado -> por fonte -> catálogo -> Jikan (nunca erro seco) ===== */
+  /* ===== busca: agregado -> por fonte -> catálogo -> Jikan ===== */
   let searchSeq = 0;
 
   const searchAcrossSources = async (q) => {
@@ -678,20 +726,16 @@ if (document.body.dataset.page === 'home') {
     const step = (msg) => { if (seq === searchSeq) box.innerHTML = `<p class="empty">${esc(msg)}</p>`; };
 
     let list = [];
-
-    /* 1) endpoint agregado (tolerante a falha) */
     const agg = await jsonSoft(`${API}/api/search?q=${encodeURIComponent(q)}&_t=${Date.now()}`);
     if (seq !== searchSeq) return;
     list = dropJujutsu(asList(agg));
 
-    /* 2) fonte por fonte */
     if (!list.length) {
       step('Ainda buscando… tentando cada servidor.');
       list = dropJujutsu(await searchAcrossSources(q));
       if (seq !== searchSeq) return;
     }
 
-    /* 3) varredura do catálogo local */
     if (!list.length) {
       step('Ainda buscando… varrendo o catálogo.');
       list = dropJujutsu(await searchCatalog(q));
@@ -700,14 +744,11 @@ if (document.body.dataset.page === 'home') {
 
     list = [...new Map(list.map(i => [i.slug || i.title, i])).values()];
 
-    /* 4) Jikan como último recurso — resultados externos clicáveis */
     if (!list.length) {
       step('Nada nas fontes. Buscando no catálogo externo…');
       const ext = await jikanSearch(q, 12);
       if (seq !== searchSeq) return;
-      if (!ext.length) {
-        return failBox(box, `Nada encontrado para "${q}".`, () => runSearch(q));
-      }
+      if (!ext.length) return failBox(box, `Nada encontrado para "${q}".`, () => runSearch(q));
       renderResults(box, ext);
       return;
     }
@@ -895,14 +936,14 @@ if (document.body.dataset.page === 'home') {
     }
   }
 
+  /* ===== perfil: prioridade de servidores (↑/↓) ===== */
   function renderProfile() {
     if ($('#p-stats')) $('#p-stats').textContent = `${favs().length} salvos · ${store.get('dls', []).length} downloads`;
 
     const prefAudio = store.get('audio', 'leg');
     $$('[data-pref-audio]').forEach(b => b.classList.toggle('on', b.dataset.prefAudio === prefAudio));
 
-    const prefSrvIdx = store.get('srv_idx', '0');
-    $$('[data-pref-srv]').forEach(b => b.classList.toggle('on', b.dataset.prefSrv === String(prefSrvIdx)));
+    renderServerPrefs();
 
     const prefQual = store.get('quality_pref', 'auto');
     $$('[data-pref-qual]').forEach(b => b.classList.toggle('on', b.dataset.prefQual === prefQual));
@@ -914,18 +955,48 @@ if (document.body.dataset.page === 'home') {
     $$('[data-pref-autofs]').forEach(b => b.classList.toggle('on', b.dataset.prefAutofs === prefAutoFs));
   }
 
+  function renderServerPrefs() {
+    const box = $('#p-srv') || $('[data-pref-srv]')?.parentElement;
+    if (!box) return;
+
+    const order = localOrder();
+    const list = order.map((id) => availableSources.find((s) => s.id === id) || { id, name: id });
+
+    syncSourceButtons(box, 'data-pref-srv', list.length);
+
+    $$('[data-pref-srv]', box).forEach((b, idx) => {
+      const s = list[idx];
+      if (!s) return;
+      b.innerHTML = `<b>${idx + 1}.</b> ${esc(s.name)} <em data-up style="margin-left:6px">↑</em><em data-down style="margin-left:2px">↓</em>`;
+      b.classList.toggle('on', idx === 0);
+      b.onclick = (e) => {
+        const up = e.target.closest('[data-up]');
+        const down = e.target.closest('[data-down]');
+        if (up && idx > 0) {
+          const next = [...order];
+          [next[idx - 1], next[idx]] = [next[idx], next[idx - 1]];
+          savePriority(next).then(renderProfile);
+          return;
+        }
+        if (down && idx < order.length - 1) {
+          const next = [...order];
+          [next[idx + 1], next[idx]] = [next[idx], next[idx + 1]];
+          savePriority(next).then(renderProfile);
+          return;
+        }
+        const next = [s.id, ...order.filter((id) => id !== s.id)];
+        savePriority(next).then(() => {
+          renderProfile();
+          toast(`${s.name} é o servidor padrão`);
+        });
+      };
+    });
+  }
+
   $$('[data-pref-audio]').forEach(b => b.onclick = () => {
     store.set('audio', b.dataset.prefAudio);
     renderProfile();
     toast('Áudio padrão salvo');
-  });
-
-  $$('[data-pref-srv]').forEach(b => b.onclick = () => {
-    const idx = +b.dataset.prefSrv;
-    store.set('srv_idx', idx);
-    if (DEFAULT_SOURCES[idx]) store.set('source', DEFAULT_SOURCES[idx].id);
-    renderProfile();
-    toast(`Servidor ${idx + 1} definido como padrão`);
   });
 
   $$('[data-pref-qual]').forEach(b => b.onclick = () => {
@@ -955,11 +1026,16 @@ if (document.body.dataset.page === 'home') {
       }
     };
   }
+
+  fetchSources().then((list) => {
+    if (!list?.length) return;
+    availableSources = list;
+    renderProfile();
+  });
 }
 
 /* ================= DETALHE ================= */
 if (document.body.dataset.page === 'detail') {
-  /* FIX: aceita detail.html?... , megaanime://detail?... e share.html?... */
   const normalizeParams = () => {
     const fromSearch = new URLSearchParams(location.search);
     if (fromSearch.get('slug')) return fromSearch;
@@ -971,7 +1047,7 @@ if (document.body.dataset.page === 'detail') {
   };
 
   const params = normalizeParams();
-  let source = params.get('source') || store.get('source', 'animesonline');
+  let source = params.get('source') || store.get('source', 'animesonlinecc');
   let slug = params.get('slug');
   let data = null, season = +(params.get('season') || 1), audio = params.get('audio') || store.get('audio', 'leg');
   let sourcesList = DEFAULT_SOURCES;
@@ -1015,7 +1091,6 @@ if (document.body.dataset.page === 'detail') {
         $('#blur').innerHTML = `<img src="${posterUrl}" alt="">`;
       }
 
-      /* FIX: sinopse/gêneros/episódios sempre do scrape — Jikan só entra em capa e personagens */
       $('#syn').textContent = data.synopsis || 'Sem sinopse.';
       $('#genres').innerHTML = `<b>Gênero:</b> ${esc(data.genres.join(', ') || '—')}`;
 
@@ -1041,7 +1116,6 @@ if (document.body.dataset.page === 'detail') {
     }
   }
 
-  /* FIX: quando o scrape falha de vez, a página é preenchida com o catálogo externo */
   function renderExternal(ext) {
     data = null;
     document.title = ext.title || initialSlug;
@@ -1071,13 +1145,13 @@ if (document.body.dataset.page === 'detail') {
     retry.textContent = 'Procurar em outras fontes';
     retry.onclick = async () => {
       retry.textContent = 'Procurando…';
-      const hits = await scrapeByTitle([source, ...sourcesList.map(s => s.id).filter(id => id !== source)], ext.title);
+      const hits = await scrapeByTitle(await resolveQueue(source), ext.title);
       if (!hits.length) { retry.textContent = 'Procurar em outras fontes'; toast('Nada encontrado nas fontes'); return; }
       applyHit(hits[0]);
     };
     box.appendChild(retry);
 
-    if (ext.malId) loadCharsFor(ext.malId, ext.title);
+    if (ext.malId) loadCharsFor(ext.malId);
     else $('#tab-chars').innerHTML = '<p class="empty">Personagens indisponíveis.</p>';
   }
 
@@ -1114,25 +1188,24 @@ if (document.body.dataset.page === 'detail') {
     store.set('source', source);
     slug = hit.res.slug || slug;
     store.set('cache_detail_' + source + ':' + slug, hit.res);
-    store.set('cache_detail_' + source + ':' + (initialSlug || slug), hit.res);
+    if (initialSlug) store.set('cache_detail_' + source + ':' + initialSlug, hit.res);
+    /* FIX: corrige a URL quando a fonte do link não era a certa */
     history.replaceState(null, '', `detail.html?source=${encodeURIComponent(source)}&slug=${encodeURIComponent(slug)}`);
     renderDetail(hit.res);
   }
 
   async function loadDetail() {
+    /* FIX: fonte do link primeiro, depois a fila priorizada (não morre no source errado) */
+    const order = (await resolveQueue(source)).map((s) => s.id);
     sourcesList = await fetchSources();
-    const order = [source, ...sourcesList.map(s => s.id).filter(id => id !== source)];
 
-    /* FIX: mostra o scrape já salvo na hora, sem esperar rede */
     const cacheKey = 'cache_detail_' + source + ':' + initialSlug;
     const cached = store.get(cacheKey);
     if (cached) renderDetail(cached);
 
-    /* 1) scrape em paralelo, 30s */
     let hits = await scrapeAll(order, initialSlug);
     if (hits.length) { applyHit(order.map(id => hits.find(h => h.src === id)).find(Boolean) || hits[0]); return; }
 
-    /* 2) usa o título canônico do Jikan para procurar de novo nas fontes */
     const guess = String(initialSlug || '').replace(/[-_]+/g, ' ');
     const ext = await jikanLookup(guess);
 
@@ -1141,7 +1214,6 @@ if (document.body.dataset.page === 'detail') {
       if (retryHits.length) { applyHit(retryHits[0]); return; }
     }
 
-    /* 3) sem scrape: preenche com o catálogo externo em vez de "não encontrado" */
     if (ext) { renderExternal(ext); return; }
     if (cached) { toast('Mostrando dados salvos'); return; }
     detailError();
@@ -1296,10 +1368,10 @@ if (document.body.dataset.page === 'detail') {
 
   $('#like').onclick = () => { $('#like').classList.toggle('on'); toast('Curtido'); };
 
-  /* FIX: compartilha link público HTTPS (abre no site e tenta abrir o app) */
   $('#share').onclick = () => {
+    const title = data?.title || $('#title')?.textContent || String(slug || '').replace(/-/g, ' ');
     const url = shareUrl({ source, slug: data?.slug || slug, season: data ? season : '', audio });
-    copyShare(url, data?.title || $('#title')?.textContent || slug);
+    copyShare(url, title);
   };
 
   $('#more').onclick = () => {
@@ -1318,7 +1390,7 @@ if (document.body.dataset.page === 'detail') {
 /* ================= PLAYER ================= */
 if (document.body.dataset.page === 'player') {
   const p = new URLSearchParams(location.search);
-  let source = p.get('source') || store.get('source', 'animesonline');
+  let source = p.get('source') || store.get('source', 'animesonlinecc');
   let slug = p.get('slug');
   const season = +(p.get('season') || 1);
   let ep = +(p.get('ep') || 1);
@@ -1331,7 +1403,7 @@ if (document.body.dataset.page === 'player') {
 
   const LOAD_TIMEOUT = 12000;
   const STALE_MS = 20 * 60 * 1000;
-  const MAX_SRC = 3;
+  const MAX_SRC = 6;
   const NEXT_AT = 15;
 
   let loadGuard = null;
@@ -1347,8 +1419,8 @@ if (document.body.dataset.page === 'player') {
   $('#back').onclick = () => history.length > 1 ? history.back() : location.href = 'index.html';
 
   async function loadInfo() {
+    const order = (await resolveQueue(source)).map((s) => s.id);
     sourcesList = await fetchSources();
-    const order = [source, ...sourcesList.map(s => s.id).filter(id => id !== source)];
     const settled = await Promise.allSettled(
       order.map(src => jsonSlow(`${API}/api/anime/${encodeURIComponent(slug)}?source=${encodeURIComponent(src)}&_t=${Date.now()}`)
         .then(raw => ({ src, raw })))
@@ -1397,7 +1469,6 @@ if (document.body.dataset.page === 'player') {
 
   const titleOverlay = () => `<div class="player-title">${esc(epLabel())}</div>`;
 
-  /* FIX: bridge real do Android para tela cheia */
   function requestFs(el) {
     try { if (window.Android && window.Android.fullscreen) { window.Android.fullscreen(); return; } } catch {}
     const target = el || $('#stage');
@@ -1432,7 +1503,6 @@ if (document.body.dataset.page === 'player') {
     return i >= 0 ? list[i + 1] : null;
   }
 
-  /* FIX: gatilho por duração — funciona também no iframe, onde não há timeupdate */
   function episodeDuration() {
     const se = info?.seasons.find(s => s.season === season) || info?.seasons[0];
     const e = (se?.episodes || []).find(x => Number(x.number) === Number(ep) && x.audio === audio);
@@ -1480,7 +1550,6 @@ if (document.body.dataset.page === 'player') {
     }, 1000);
   }
 
-  /* FIX: retry só quando não existe fonte válida */
   function errorScreen(msg = 'Erro ao carregar episódio, tente novamente mais tarde.', opts = {}) {
     const retry = opts.retry !== false;
     unmountStage();
@@ -1515,16 +1584,16 @@ if (document.body.dataset.page === 'player') {
     return true;
   }
 
+  /* FIX: percorre a fila priorizada inteira, não só 3 fontes fixas */
   async function resolveStreamWithFallback() {
-    sourcesList = await fetchSources();
-    const order = [source, ...sourcesList.map(s => s.id).filter(id => id !== source)].slice(0, MAX_SRC);
-    for (const src of order) {
+    const queue = await resolveQueue(source);
+    for (const s of queue) {
+      const src = s.id;
       try {
         const qs = new URLSearchParams({ source: src, audio, season: String(season), n: String(ep) }).toString();
-        /* FIX: sempre fresco — cache: 'no-store' + anti-cache _t= (token/URL do vídeo são temporários) */
         const d = await jsonFresh(`${API}/api/streams/${encodeURIComponent(slug)}/${ep}?${qs}&_t=${Date.now()}`, 18000);
         if (!d || d.ok === false) continue;
-        const list = (d.sources || d.streams || []).filter(s => (s.url || s.proxyUrl) && !isSiteAnimePage(s.url || s.proxyUrl) && !isJunkMedia(s.url || s.proxyUrl));
+        const list = (d.sources || d.streams || []).filter(x => (x.url || x.proxyUrl) && !isSiteAnimePage(x.url || x.proxyUrl) && !isJunkMedia(x.url || x.proxyUrl));
         const validIframes = (d.iframes || []).filter(u => u && !isSiteAnimePage(u));
         const blogger = validIframes.find(u => isBloggerEmbed(u));
         const embedUrl = unwrapOEmbed(blogger || (!isSiteAnimePage(d.iframe) ? d.iframe : null) || validIframes[0] || null);
@@ -1565,7 +1634,6 @@ if (document.body.dataset.page === 'player') {
       lastEmbed = embedUrl || null;
       resolvedAt = Date.now();
 
-      /* FIX: quando existe embed do Blogger, ele reproduz de verdade — vai direto no iframe do stage */
       if (embedUrl && blogger && server !== 'native' && mountFrame(embedUrl)) {
         toast('Player do episódio carregado');
         return;
@@ -1751,14 +1819,23 @@ if (document.body.dataset.page === 'player') {
     };
   });
 
-  function updateServerButtons() {
-    if (!sourcesList || !sourcesList.length) sourcesList = DEFAULT_SOURCES;
-    $$('#srv-options [data-source-idx]').forEach(b => {
-      const idx = +b.dataset.sourceIdx;
-      const sObj = sourcesList[idx] || DEFAULT_SOURCES[idx];
-      b.classList.toggle('on', Boolean(sObj && sObj.id === source));
+  /* FIX: overlay de servidores montado dinamicamente, na ordem priorizada */
+  async function updateServerButtons() {
+    const box = $('#srv-options');
+    if (!box) return;
+    const list = await fetchSources();
+    sourcesList = list;
+    const order = localOrder().map((id) => list.find((s) => s.id === id)).filter(Boolean);
+
+    syncSourceButtons(box, 'data-source-idx', order.length);
+
+    $$('[data-source-idx]', box).forEach((b, idx) => {
+      const sObj = order[idx];
+      if (!sObj) return;
+      b.textContent = `Servidor ${idx + 1}`;
+      b.title = sObj.name;
+      b.classList.toggle('on', sObj.id === source);
       b.onclick = () => {
-        if (!sObj) return;
         source = sObj.id;
         store.set('source', source);
         $('#overlay').classList.remove('on');

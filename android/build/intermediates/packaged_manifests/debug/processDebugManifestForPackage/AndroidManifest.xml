@@ -12,10 +12,7 @@
     <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE" />
     <uses-permission
         android:name="android.permission.WRITE_EXTERNAL_STORAGE"
-        android:maxSdkVersion="32" />
-    <uses-permission
-        android:name="android.permission.READ_EXTERNAL_STORAGE"
-        android:maxSdkVersion="32" />
+        android:maxSdkVersion="28" />
     <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
 
     <permission
@@ -29,28 +26,48 @@
         android:appComponentFactory="androidx.core.app.CoreComponentFactory"
         android:debuggable="true"
         android:extractNativeLibs="false"
-        android:hardwareAccelerated="true"
-        android:icon="@drawable/ic_launcher"
-        android:label="Mega Anime"
-        android:largeHeap="true"
-        android:roundIcon="@drawable/ic_launcher"
+        android:label="MEGA ANIME"
         android:supportsRtl="true"
         android:testOnly="true"
-        android:theme="@style/Theme.AppCompat.NoActionBar"
         android:usesCleartextTraffic="true" >
-
-        <!-- FIX: fullSensor + configChanges completos para o fullscreen girar sem recriar a Activity -->
         <activity
             android:name="com.megaanime.app.MainActivity"
-            android:configChanges="orientation|screenSize|smallestScreenSize|screenLayout|keyboardHidden|uiMode"
+            android:configChanges="orientation|screenSize|keyboardHidden|screenLayout|smallestScreenSize|uiMode"
             android:exported="true"
-            android:resizeableActivity="true"
-            android:screenOrientation="fullSensor"
+            android:launchMode="singleTop"
             android:windowSoftInputMode="adjustResize" >
             <intent-filter>
                 <action android:name="android.intent.action.MAIN" />
 
                 <category android:name="android.intent.category.LAUNCHER" />
+            </intent-filter>
+
+            <!-- links do app: megaanime://detail?... e megaanime://player?... -->
+            <intent-filter>
+                <action android:name="android.intent.action.VIEW" />
+
+                <category android:name="android.intent.category.DEFAULT" />
+                <category android:name="android.intent.category.BROWSABLE" />
+
+                <data
+                    android:host="detail"
+                    android:scheme="megaanime" />
+                <data
+                    android:host="player"
+                    android:scheme="megaanime" />
+            </intent-filter>
+
+            <!-- links do site (share.html) -->
+            <intent-filter>
+                <action android:name="android.intent.action.VIEW" />
+
+                <category android:name="android.intent.category.DEFAULT" />
+                <category android:name="android.intent.category.BROWSABLE" />
+
+                <data
+                    android:host="carlin-dark.github.io"
+                    android:pathPrefix="/Mega-Anime/"
+                    android:scheme="https" />
             </intent-filter>
         </activity>
 

@@ -5,7 +5,14 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 import { UA_STRING, headersFor, fetchText } from './lib/http.mjs';
-import { getSource, listSources, DEFAULT_SOURCE } from './sources/registry.mjs';
+import {
+  getSource,
+  listSources,
+  priorityIds,
+  setPriority,
+  defaultSourceId,
+  DEFAULT_SOURCE,
+} from './sources/registry.mjs';
 import { isAnimePageUrl, isJunkMedia, isBloggerEmbed } from './lib/stream.mjs';
 import { freshHtml, extractEpisodeSources, episodeCandidates } from './lib/episode.mjs';
 import * as jikan from './sources/jikan.mjs';
@@ -18,12 +25,22 @@ app.use(express.json());
 app.use((_req, res, next) => {
   res.set('access-control-allow-origin', '*');
   res.set('access-control-allow-headers', '*');
+  res.set('access-control-allow-methods', 'GET,POST,OPTIONS');
   next();
 });
 
 const ok = (res, data, max = 60) => res.set('cache-control', `public, max-age=${max}`).json(data);
 const fail = (res, err, code = 502) => res.status(code).json({ error: String(err?.message || err) });
 const pick = (req, explicitSource) => getSource(explicitSource || req.query.source || req.params.source);
+
+/* fila priorizada: começa na fonte pedida, segue a prioridade do usuário, depois o resto */
+const sourceQueue = (preferredId) => {
+  const first = String(preferredId || '');
+  const ids = priorityIds();
+  const ordered = [...new Set([first, ...ids])].filter((id) => id);
+  const queue = ordered.map((id) => getSource(id));
+  return [...new Map(queue.map((s) => [s.meta.id, s])).values()];
+};
 
 const dedupeByUrl = (list = []) => {
   const seen = new Set();
@@ -81,8 +98,7 @@ const rotate = (arr = [], by = 0) => {
   return arr.slice(n).concat(arr.slice(0, n));
 };
 
-/* FIX: pool de "Em Alta" — home + catálogo da fonte, com cache de 10 min.
-   Garante que a seção nunca dependa de um slice vazio da home. */
+/* FIX: pool de "Em Alta" — home + catálogo da fonte, com cache de 10 min. */
 async function trendingPool(src) {
   const key = 'pool:' + src.meta.id;
   const hit = cacheGet(key, 10 * 60_000);
@@ -104,11 +120,29 @@ async function trendingPool(src) {
   return list;
 }
 
-app.get('/api/sources', (_req, res) => res.json({ default: DEFAULT_SOURCE, sources: listSources() }));
+app.get('/api/sources', (_req, res) => {
+  res.set('cache-control', 'no-store');
+  res.json({ default: defaultSourceId(), sources: listSources() });
+});
+
+/* ===== prioridade de servidores ===== */
+app.get('/api/priority', (_req, res) => {
+  res.set('cache-control', 'no-store');
+  res.json({ order: priorityIds(), sources: listSources() });
+});
+
+app.post('/api/priority', (req, res) => {
+  const order = req.body?.order;
+  if (!Array.isArray(order) || !order.length) {
+    return res.status(400).json({ error: 'envie { "order": ["id1","id2",...] }' });
+  }
+  res.set('cache-control', 'no-store');
+  res.json({ order: setPriority(order), sources: listSources() });
+});
 
 app.get(['/api/home', '/api/home/:source'], async (req, res) => {
   const first = pick(req);
-  const order = [first, ...listSources().map((s) => getSource(s.id)).filter((s) => s.meta.id !== first.meta.id)];
+  const order = sourceQueue(first.meta.id);
 
   for (const src of order) {
     try {
@@ -129,8 +163,6 @@ app.get(['/api/home', '/api/home/:source'], async (req, res) => {
       let latest = rawSections.find((sec) => sec.id === 'latest')?.items || [];
       if (!latest.length) latest = all.slice(0, 24);
 
-      /* FIX: "Em Alta" nunca volta vazia — se a fonte não tiver a seção,
-         completa com home + catálogo rotacionados pelo dia. */
       let top = rawSections.find((sec) => sec.id === 'top')?.items || [];
       if (top.length < 8) {
         const pool = dedupe([...all, ...(await budget(trendingPool(src), 12000).catch(() => []))]);
@@ -149,14 +181,13 @@ app.get(['/api/home', '/api/home/:source'], async (req, res) => {
   ok(res, { source: first.meta.id, hero: [], sections: [] }, 15);
 });
 
-/* FIX: rota dedicada de trending, independente da home */
 app.get(['/api/trending', '/api/trending/:source'], async (req, res) => {
   const first = pick(req);
   const key = 'trending:' + first.meta.id;
   const hit = cacheGet(key, 10 * 60_000);
   if (hit?.fresh) return ok(res, { source: first.meta.id, items: hit.v }, 600);
 
-  const order = [first, ...listSources().map((s) => getSource(s.id)).filter((s) => s.meta.id !== first.meta.id)];
+  const order = sourceQueue(first.meta.id);
 
   for (const src of order) {
     try {
@@ -189,12 +220,9 @@ app.get(['/api/search', '/api/search/:source'], async (req, res) => {
   if (!q) return res.json({ results: [] });
 
   const explicit = req.query.source || req.params.source;
-  const targets = explicit
-    ? [getSource(explicit)]
-    : [...new Set([DEFAULT_SOURCE, ...listSources().map((x) => x.id)])].map((id) => getSource(id));
+  const targets = explicit ? [getSource(explicit)] : sourceQueue(defaultSourceId());
 
   const out = [];
-  /* 12s por fonte, sempre em paralelo — o cliente espera 20s */
   await Promise.all(targets.map(async (t) => {
     try {
       const items = await budget(Promise.resolve(t.search(q)), 12000);
@@ -202,7 +230,6 @@ app.get(['/api/search', '/api/search/:source'], async (req, res) => {
     } catch {}
   }));
 
-  /* FIX: fallback de varredura no catálogo quando a busca da fonte falha/volta vazia */
   let partial = false;
   if (!out.length) {
     partial = true;
@@ -223,7 +250,7 @@ app.get(['/api/search', '/api/search/:source'], async (req, res) => {
 
 app.get('/api/episodes-all', async (req, res) => {
   const qTitle = String(req.query.title || req.query.q || '').trim();
-  const preferredSource = String(req.query.source || DEFAULT_SOURCE);
+  const preferredSource = String(req.query.source || defaultSourceId());
   const slugHint = String(req.query.slug || '').trim();
 
   if (!qTitle && !slugHint) {
@@ -231,11 +258,7 @@ app.get('/api/episodes-all', async (req, res) => {
   }
 
   const targetNorm = normTitle(qTitle || slugHint.replace(/[-_]+/g, ' '));
-  const allSources = listSources().map((m) => getSource(m.id));
-  const ordered = [
-    ...allSources.filter((s) => s.meta.id === preferredSource),
-    ...allSources.filter((s) => s.meta.id !== preferredSource),
-  ];
+  const ordered = sourceQueue(preferredSource);
 
   const bundles = [];
 
@@ -283,8 +306,8 @@ app.get('/api/episodes-all', async (req, res) => {
   ok(res, { query: qTitle || slugHint, results: bundles }, 30);
 });
 
-/* FIX: detalhe com budget maior, cache e resolução de fonte NO SERVIDOR.
-   O cliente não precisa mais procurar slug em outra fonte (era o que estourava o timeout). */
+/* FIX: detalhe com budget maior, cache e resolução de fonte NO SERVIDOR,
+   seguindo a fila priorizada quando a fonte do link falha. */
 const DETAIL_TTL = 5 * 60_000;
 
 const detailOf = async (src, targetSlug) => {
@@ -314,9 +337,8 @@ app.get(['/api/anime/:slug', '/api/anime/:source/:slug'], async (req, res) => {
     cacheSet(key, a);
     return res.json(a);
   } catch (firstErr) {
-    /* FIX: resolve em outras fontes aqui dentro, usando o título derivado do slug */
     const q = normTitle(targetSlug.replace(/[-_]+/g, ' '));
-    const others = listSources().map((m) => getSource(m.id)).filter((s) => s.meta.id !== src.meta.id);
+    const others = sourceQueue(src.meta.id).filter((s) => s.meta.id !== src.meta.id);
 
     for (const alt of others) {
       try {
@@ -338,7 +360,6 @@ app.get(['/api/anime/:slug', '/api/anime/:source/:slug'], async (req, res) => {
 });
 
 app.get(['/api/streams/:slug/:ep', '/api/streams/:source/:slug/:ep'], async (req, res) => {
-  /* FIX: no-store desde a entrada — inclusive no erro, que antes ia cacheável para o cliente */
   res.set('cache-control', 'no-store, max-age=0, must-revalidate');
   res.set('pragma', 'no-cache');
 
@@ -361,9 +382,6 @@ app.get(['/api/streams/:slug/:ep', '/api/streams/:source/:slug/:ep'], async (req
 
     const out = await budget(Promise.resolve(src.streams(targetSlug, resolvedEpId, audio, season)), 16000);
 
-    /* FIX: resolução FRESCA via HTML bruto da página do episódio.
-       O token/URL do Blogger é temporário, então o HTML atual é buscado a cada clique
-       (fetch leve com UA/headers + anti-cache _t= + no-store). Sem navegador headless. */
     const pageCandidates = [...new Set([
       out.pageUrl,
       ...episodeCandidates(src.meta.base, targetSlug, season, epNum),
@@ -385,7 +403,6 @@ app.get(['/api/streams/:slug/:ep', '/api/streams/:source/:slug/:ep'], async (req
       }
     }
 
-    /* FIX: bg.mp4 e assets de tema não entram como episódio */
     const sources = dedupeByUrl([
       ...(out.sources || [])
         .filter((x) => x.url && !isAnimePageUrl(x.url) && !isJunkMedia(x.url))
@@ -404,7 +421,6 @@ app.get(['/api/streams/:slug/:ep', '/api/streams/:source/:slug/:ep'], async (req
 
     const validIframes = [...new Set([...(out.iframes || []), ...freshBlogger])]
       .filter((u) => u && !isAnimePageUrl(u) && !isJunkMedia(u));
-    /* FIX: blogger na frente — é o embed que realmente reproduz */
     const orderedIframes = [...validIframes].sort((a, b) => Number(isBloggerEmbed(b)) - Number(isBloggerEmbed(a)));
     const iframe = orderedIframes[0] || null;
 
@@ -435,10 +451,10 @@ app.get(['/api/streams/:slug/:ep', '/api/streams/:source/:slug/:ep'], async (req
     const first = await trySource(preferredSrc, req.params.slug, req.params.ep);
     let finalPayload = first.payload;
 
-    // Se a fonte escolhida nao retornou stream nem iframe, tenta nas outras fontes pelo titulo
+    /* FIX: fallback segue a fila priorizada do usuário */
     if (!finalPayload.sources.length && !finalPayload.iframe) {
       const q = normTitle(first.animeTitle || req.params.slug.replace(/[-_]+/g, ' '));
-      const others = listSources().map((m) => getSource(m.id)).filter((s) => s.meta.id !== preferredSrc.meta.id);
+      const others = sourceQueue(preferredSrc.meta.id).filter((s) => s.meta.id !== preferredSrc.meta.id);
       for (const alt of others) {
         try {
           const found = await budget(Promise.resolve(alt.search(q)), 8000).catch(() => []);
@@ -458,7 +474,14 @@ app.get(['/api/streams/:slug/:ep', '/api/streams/:source/:slug/:ep'], async (req
 
     const hasSource = Boolean(finalPayload.sources.length || finalPayload.iframe);
     const body = { ok: hasSource, ...finalPayload };
-    if (debug) body.diagnostics = { preferredSource: preferredSrc.meta.id, triedSlug: req.params.slug, triedEp: req.params.ep };
+    if (debug) {
+      body.diagnostics = {
+        preferredSource: preferredSrc.meta.id,
+        queue: sourceQueue(preferredSrc.meta.id).map((s) => s.meta.id),
+        triedSlug: req.params.slug,
+        triedEp: req.params.ep,
+      };
+    }
 
     res.status(hasSource ? 200 : 404).set('cache-control', 'no-store').json(body);
   } catch (e) {
@@ -466,7 +489,7 @@ app.get(['/api/streams/:slug/:ep', '/api/streams/:source/:slug/:ep'], async (req
   }
 });
 
-/* ===== temporadas / calendário (FIX: local-first + cache + 3 níveis + /api/calendar) ===== */
+/* ===== temporadas / calendário ===== */
 const seasonCache = new Map();
 const seasonKey = (y, s) => `${y}:${s}`;
 
@@ -479,16 +502,14 @@ async function seasonPayload(year, season) {
 
   let items = [];
 
-  // 1) catálogo local filtrado pelo ano (rápido e determinístico)
   try {
-    const src = getSource(DEFAULT_SOURCE);
+    const src = getSource(defaultSourceId());
     const { items: cat } = await budget(Promise.resolve(src.catalog(1)), 10000);
     items = (cat || [])
       .filter((a) => !a.year || String(a.year) === String(year))
-      .map((a) => cardOf(a, DEFAULT_SOURCE));
+      .map((a) => cardOf(a, src.meta.id));
   } catch {}
 
-  // 2) Jikan via módulo
   if (!items.length) {
     try {
       const d = await budget(jikan.season(year, season), 12000);
@@ -496,12 +517,11 @@ async function seasonPayload(year, season) {
     } catch {}
   }
 
-  // 3) catálogo sem filtro de ano (nunca devolve vazio por causa do ano)
   if (!items.length) {
     try {
-      const src = getSource(DEFAULT_SOURCE);
+      const src = getSource(defaultSourceId());
       const { items: cat } = await budget(Promise.resolve(src.catalog(1)), 8000);
-      items = (cat || []).map((a) => cardOf(a, DEFAULT_SOURCE));
+      items = (cat || []).map((a) => cardOf(a, src.meta.id));
     } catch {}
   }
 
@@ -512,7 +532,6 @@ async function seasonPayload(year, season) {
 
 app.get('/api/seasons', async (_req, res) => {
   try {
-    // o módulo exporta seasonNow, não now
     const fn = jikan.seasonNow || jikan.now;
     const d = await budget(Promise.resolve(fn()), 12000);
     ok(res, { items: asItems(d) }, 900);
@@ -532,7 +551,6 @@ app.get('/api/seasons/:year/:season', async (req, res) => {
   }
 });
 
-// rota que o frontend chamava e não existia (404)
 app.get('/api/calendar', async (req, res) => {
   const now = new Date();
   const year = Number(req.query.year) || now.getFullYear();
@@ -572,7 +590,6 @@ app.get('/api/proxy-stream', async (req, res) => {
 
     const r = await fetch(u.toString(), { headers: headersFor(u.toString(), ref, extra) });
 
-    // Se o host (ex.: aniplay.online) bloquear o IP da Render com 403/503, retorna o link direto para o cliente tentar
     if (r.status === 403 || r.status === 503) {
       return res.status(409).json({ error: 'Host bloqueou IP do servidor', directUrl: u.toString() });
     }
@@ -638,4 +655,4 @@ app.use(express.static(path.join(__dirname, '..', 'web'), { extensions: ['html']
 app.get('*', (_req, res) => res.sendFile(path.join(__dirname, '..', 'web', 'index.html')));
 
 const PORT = process.env.PORT || 3000;
-app.listen(PORT, () => console.log(`MEGA on :${PORT}`));
+app.listen(PORT, () => console.log(`MEGA on :${PORT} | prioridade: ${priorityIds().join(' > ')}`));
