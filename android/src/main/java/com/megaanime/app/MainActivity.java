@@ -111,6 +111,13 @@ public class MainActivity extends AppCompatActivity {
         web.loadUrl("file:///android_asset/web/index.html");
     }
 
+    /* FIX: tela cheia pedida pelo player via window.Android.fullscreen() */
+    public void enterImmersive() {
+        getWindow().addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON);
+        setRequestedOrientation(ActivityInfo.SCREEN_ORIENTATION_UNSPECIFIED);
+        setImmersive(true);
+    }
+
     @Override
     public void onRequestPermissionsResult(int code, String[] perms, int[] results) {
         super.onRequestPermissionsResult(code, perms, results);
@@ -145,6 +152,19 @@ public class MainActivity extends AppCompatActivity {
         if (customView != null) { web.getWebChromeClient().onHideCustomView(); return; }
         if (web.canGoBack()) web.goBack();
         else super.onBackPressed();
+    }
+
+    /* FIX: pausa/retoma o WebView para não continuar tocando em background */
+    @Override
+    protected void onPause() {
+        if (web != null) web.onPause();
+        super.onPause();
+    }
+
+    @Override
+    protected void onResume() {
+        super.onResume();
+        if (web != null) web.onResume();
     }
 
     @Override

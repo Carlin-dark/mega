@@ -5,6 +5,16 @@ const $$ = (s, r = document) => [...r.querySelectorAll(s)];
 const esc = (s = '') => String(s).replace(/[&<>"]/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]));
 const img = (u) => (u ? `${API}/img?u=${encodeURIComponent(u)}` : '');
 
+/* FIX: bg.mp4 / assets de tema não são episódio */
+const JUNK_RE = /(?:^|[/_\-.])(bg|background|banner|poster|thumb|thumbnail|trailer|placeholder|preview|sprite)(?:[-_.][\w-]+)?\.(?:mp4|webm|m4v|ogv)(?:[?#]|$)/i;
+const ASSET_RE = /(?:\/wp-content\/|\/assets\/|\/static\/|\/tema\/|\/themes\/|\/img\/|\/images\/)[^?#]*\.(?:mp4|webm|m4v)(?:[?#]|$)/i;
+const isJunkMedia = (u = '') => {
+  const s = String(u || '');
+  if (!s) return true;
+  return /\/bg\.mp4/i.test(s) || JUNK_RE.test(s) || ASSET_RE.test(s);
+};
+const isBloggerEmbed = (u = '') => /blogger\.com\/video\.g|video\.g\?token=/i.test(String(u || ''));
+
 const DEFAULT_SOURCES = [
   { id: 'animesonline', name: 'Servidor 1' },
   { id: 'animefire', name: 'Servidor 2' },
@@ -41,7 +51,6 @@ async function getPosterFallback(title) {
   const clean = String(title).replace(/\b(dub\w*|leg\w*|temporada\w*|\d+ª?|eps?\.?\s*\d+)\b/gi, '').trim();
   if (posterFallbackCache[clean]) return posterFallbackCache[clean];
 
-  // 1. Try Jikan API (handles Jujutsu Kaisen and others perfectly)
   try {
     const r = await fetch(`https://api.jikan.moe/v4/anime?q=${encodeURIComponent(clean)}&limit=1`);
     const d = await r.json();
@@ -52,7 +61,6 @@ async function getPosterFallback(title) {
     }
   } catch {}
 
-  // 2. Try AniList GraphQL API
   try {
     const query = `
       query ($search: String) {
@@ -217,7 +225,7 @@ function card(a, ep, srcOverride) {
   return el;
 }
 
-async function jsonWithTimeout(url, ms = 6000) {
+async function jsonWithTimeout(url, ms = 5000) {
   const controller = new AbortController();
   const id = setTimeout(() => controller.abort(), ms);
   try {
@@ -234,7 +242,7 @@ async function jsonWithTimeout(url, ms = 6000) {
     throw e;
   }
 }
-const json = (u) => jsonWithTimeout(u, 7000);
+const json = (u) => jsonWithTimeout(u, 15000);
 
 async function fetchSources() {
   try {
@@ -324,9 +332,7 @@ if (document.body.dataset.page === 'home') {
     el.addEventListener('pointerleave', startHero);
   }
 
-  /* Fast Cached & Parallel Home Loader */
   async function loadHome() {
-    // Check local Home Cache for immediate instant paint
     const cachedHome = store.get('cache_home_' + currentSource);
     if (cachedHome && cachedHome.length) {
       heroPool = cachedHome.slice(0, 8);
@@ -347,11 +353,10 @@ if (document.body.dataset.page === 'home') {
       cont.slice(0, 12).forEach(c => $('#continue').appendChild(card(c, c.ep, c.source || currentSource)));
     }
 
-    // Parallel fetch sources + home data
     try {
       const [sourcesRes, homeRes] = await Promise.allSettled([
         fetchSources(),
-        jsonWithTimeout(`${API}/api/home?source=${encodeURIComponent(currentSource)}`, 6000)
+        jsonWithTimeout(`${API}/api/home?source=${encodeURIComponent(currentSource)}`, 5000)
       ]);
 
       if (sourcesRes.status === 'fulfilled' && sourcesRes.value) {
@@ -363,7 +368,6 @@ if (document.body.dataset.page === 'home') {
         list = asList(homeRes.value);
       }
 
-      // If current source failed or returned empty, try fallback source in background
       if (!list.length) {
         for (const s of availableSources) {
           if (s.id === currentSource) continue;
@@ -408,7 +412,7 @@ if (document.body.dataset.page === 'home') {
     if (busy || done) return;
     busy = true;
     try {
-      const list = asList(await jsonWithTimeout(`${API}/api/catalog?page=${++page}&source=${encodeURIComponent(currentSource)}`, 6000));
+      const list = asList(await jsonWithTimeout(`${API}/api/catalog?page=${++page}&source=${encodeURIComponent(currentSource)}`, 5000));
       if (!list.length) done = true;
       else list.forEach(a => $('#catalog').appendChild(card(a, null, currentSource)));
     } catch {}
@@ -421,7 +425,6 @@ if (document.body.dataset.page === 'home') {
     views.forEach(x => $('#view-' + x)?.classList.toggle('hide', x !== v));
     $$('.nav a').forEach(a => a.classList.toggle('on', a.dataset.tab === v));
 
-    // REQUIREMENT 5: Top Header restricted ONLY to Home view
     const isHome = v === 'home';
     $('.top')?.classList.toggle('hide', !isHome);
     $('#searchbar')?.classList.add('hide');
@@ -441,7 +444,6 @@ if (document.body.dataset.page === 'home') {
   $('#btn-search').onclick = () => { $('#searchbar').classList.toggle('hide'); $('#q').focus(); };
   $('#btn-bell').onclick = () => { show('home'); toast('Novos episódios na Home'); };
 
-  /* REQUIREMENT 2: UNIFIED PARALLEL MULTI-SOURCE SEARCH */
   $('#searchbar').onsubmit = async (e) => {
     e.preventDefault();
     const q = $('#q').value.trim();
@@ -451,7 +453,7 @@ if (document.body.dataset.page === 'home') {
     box.innerHTML = '<p class="empty">Buscando em todas as fontes em paralelo…</p>';
     try {
       const sources = await fetchSources();
-      const promises = sources.map(s => jsonWithTimeout(`${API}/api/search?q=${encodeURIComponent(q)}&source=${s.id}`, 5000).catch(() => null));
+      const promises = sources.map(s => jsonWithTimeout(`${API}/api/search?q=${encodeURIComponent(q)}&source=${s.id}`, 15000).catch(() => null));
       const settled = await Promise.allSettled(promises);
       let allResults = [];
       settled.forEach((res, idx) => {
@@ -465,7 +467,7 @@ if (document.body.dataset.page === 'home') {
       });
       const uniq = [...new Map(allResults.map(item => [item.slug || item.title, item])).values()];
       box.innerHTML = '';
-      if (!uniq.length) return failBox(box, `Nada encontrado para "${q}" em nenhuma fonte.`);
+      if (!uniq.length) return failBox(box, `Nada encontrado para "${q}" em nenhuma fonte.`, () => $('#searchbar').requestSubmit());
       uniq.forEach(a => box.appendChild(card(a, null, a.source || sources[0]?.id)));
     } catch {
       failBox(box, 'Erro na busca.', () => $('#searchbar').requestSubmit());
@@ -498,15 +500,19 @@ if (document.body.dataset.page === 'home') {
     });
   }
 
-  /* REQUIREMENT 8: CALENDAR UP TO 2030 WITH JIKAN FALLBACK */
   let seasonsReady = false;
+  let currentSeasonReqId = 0;
+
   function initSeasons() {
     const sel = $('#s-year');
-    if (sel && !sel.options.length) {
-      const curYear = new Date().getFullYear();
-      for (let i = 2030; i >= 2000; i--) sel.add(new Option(i, i));
-      sel.value = curYear;
-      sel.onchange = () => loadSeason();
+    if (sel) {
+      if (!sel.options.length) {
+        for (let i = 2030; i >= 2000; i--) sel.add(new Option(i, i));
+        sel.value = Math.min(2030, new Date().getFullYear());
+      }
+      sel.classList.add('hide');
+      buildYearPicker(sel);
+      sel.onchange = () => { syncYearLabel(sel); loadSeason(); };
       $$('[data-s]').forEach(b => b.onclick = () => {
         $$('[data-s]').forEach(x => x.classList.toggle('on', x === b));
         loadSeason(b.dataset.s);
@@ -515,71 +521,131 @@ if (document.body.dataset.page === 'home') {
     if (!seasonsReady) { seasonsReady = true; loadSeason(); }
   }
 
+  function buildYearPicker(sel) {
+    if ($('#yearpick')) { syncYearLabel(sel); return; }
+    const wrap = document.createElement('div');
+    wrap.className = 'yearpick-wrap';
+    wrap.innerHTML = `<button type="button" class="yearpick-btn" id="yearpick-btn" aria-haspopup="dialog">
+        <span id="yearpick-label"></span>
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" style="width:14px;height:14px"><path d="m6 9 6 6 6-6"/></svg>
+      </button>
+      <div class="yearpick" id="yearpick" role="dialog" aria-label="Escolher ano">
+        <div class="yearpick-head"><b>Escolha o ano</b>
+          <button type="button" class="yearpick-x" id="yearpick-x" aria-label="Fechar">${ICONS.x}</button>
+        </div>
+        <div class="yearpick-grid" id="yearpick-grid"></div>
+      </div>`;
+    sel.parentElement.insertBefore(wrap, sel.nextSibling);
+
+    const grid = $('#yearpick-grid');
+    for (let y = 2030; y >= 2000; y--) {
+      const b = document.createElement('button');
+      b.type = 'button';
+      b.className = 'yearpick-i';
+      b.textContent = y;
+      b.dataset.y = String(y);
+      b.onclick = () => {
+        sel.value = String(y);
+        syncYearLabel(sel);
+        $('#yearpick').classList.remove('on');
+        loadSeason();
+      };
+      grid.appendChild(b);
+    }
+    $('#yearpick-btn').onclick = () => { $('#yearpick').classList.toggle('on'); syncYearLabel(sel); };
+    $('#yearpick-x').onclick = () => $('#yearpick').classList.remove('on');
+    document.addEventListener('click', (e) => {
+      if (!e.target.closest('.yearpick-wrap')) $('#yearpick')?.classList.remove('on');
+    });
+    syncYearLabel(sel);
+  }
+
+  function syncYearLabel(sel) {
+    const lbl = $('#yearpick-label');
+    if (lbl) lbl.textContent = sel.value;
+    $$('#yearpick-grid .yearpick-i').forEach(b => b.classList.toggle('on', b.dataset.y === String(sel.value)));
+  }
+
+  function renderSeasonCards(box, list) {
+    box.innerHTML = '';
+    list.forEach(m => {
+      const titleEsc = esc(m.title || '');
+      const el = document.createElement('a');
+      el.className = 'card';
+      el.href = '#';
+      const coverSrc = m.cover ? (m.cover.startsWith('http') ? esc(m.cover) : img(m.cover)) : '';
+      el.innerHTML = `${coverSrc ? `<img loading="lazy" src="${coverSrc}" alt="${titleEsc}" onerror="this.onerror=null; getPosterFallback('${titleEsc}').then(u=>{if(u)this.src=u});">` : '<div style="aspect-ratio:2/3;background:#1b1b22"></div>'}
+        ${m.score ? `<span class="ep">${ICONS.star} ${Number(m.score).toFixed(1)}</span>` : ''}
+        <div class="cap"><b>${titleEsc}</b><small>${esc(m.type || m.day || m.year || '')}</small></div>`;
+      el.onclick = async (e) => {
+        e.preventDefault();
+        if (m.slug) return location.href = `detail.html?source=${encodeURIComponent(currentSource)}&slug=${encodeURIComponent(m.slug)}`;
+        toast('Procurando no catálogo…');
+        try {
+          const r = asList(await json(`${API}/api/search?q=${encodeURIComponent(m.title)}`));
+          if (r[0]) location.href = `detail.html?source=${encodeURIComponent(r[0].source || currentSource)}&slug=${encodeURIComponent(r[0].slug)}`;
+          else toast('Não disponível nas fontes');
+        } catch { toast('Falha na busca'); }
+      };
+      box.appendChild(el);
+    });
+  }
+
   async function loadSeason(season) {
+    const reqId = ++currentSeasonReqId;
     const s = season || $('[data-s].on')?.dataset.s || 'winter';
     const y = $('#s-year')?.value || new Date().getFullYear();
     const box = $('#season-grid');
-    box.innerHTML = '<p class="empty">Carregando lançamentos da temporada…</p>';
+
+    const cacheKey = `cache_season_${y}_${s}`;
+    const cached = store.get(cacheKey);
+    if (cached && cached.length) {
+      renderSeasonCards(box, cached);
+    } else {
+      box.innerHTML = '<p class="empty">Carregando lançamentos da temporada…</p>';
+    }
+
     try {
       let list = [];
-      try {
-        list = asList(await jsonWithTimeout(`${API}/api/seasons/${y}/${s}`, 5000));
-      } catch {}
+      list = asList(await jsonWithTimeout(`${API}/api/calendar?year=${y}&season=${s}`, 14000).catch(() => null));
 
-      // Fallback to Jikan Seasons API
-      if (!list || !list.length) {
-        try {
-          const jikan = await fetch(`https://api.jikan.moe/v4/seasons/${y}/${s}`).then(r => r.json());
-          if (Array.isArray(jikan?.data)) {
-            list = jikan.data.map(item => ({
-              title: item.title,
-              cover: item.images?.jpg?.large_image_url || item.images?.jpg?.image_url,
-              score: item.score,
-              type: item.type,
-              year: y
-            }));
-          }
-        } catch {}
+      if (!list.length) {
+        const j = await jsonWithTimeout(`https://api.jikan.moe/v4/seasons/${y}/${s}?limit=24&sfw`, 12000).catch(() => null);
+        if (Array.isArray(j?.data)) {
+          list = j.data.map(item => ({
+            title: item.title,
+            cover: item.images?.jpg?.large_image_url || item.images?.jpg?.image_url,
+            score: item.score,
+            type: item.type,
+            year: y
+          }));
+        }
       }
 
-      if (!list || !list.length) {
-        try {
-          list = asList(await jsonWithTimeout(`${API}/api/calendar`, 5000));
-        } catch {}
+      if (!list.length) {
+        const homeList = asList(await jsonWithTimeout(`${API}/api/home?source=${encodeURIComponent(currentSource)}`, 9000).catch(() => null));
+        list = homeList.filter(a => !a.year || String(a.year) === String(y));
+        if (!list.length) list = homeList;
       }
 
-      box.innerHTML = '';
-      if (!list || !list.length) return failBox(box, 'Nada encontrado nesta temporada.', () => loadSeason(s));
+      if (reqId !== currentSeasonReqId) return;
 
-      list.forEach(m => {
-        const titleEsc = esc(m.title || '');
-        const el = document.createElement('a');
-        el.className = 'card';
-        el.href = '#';
-        const coverSrc = m.cover ? (m.cover.startsWith('http') ? esc(m.cover) : img(m.cover)) : '';
-        el.innerHTML = `${coverSrc ? `<img loading="lazy" src="${coverSrc}" alt="${titleEsc}" onerror="this.onerror=null; getPosterFallback('${titleEsc}').then(u=>{if(u)this.src=u});">` : '<div style="aspect-ratio:2/3;background:#1b1b22"></div>'}
-          ${m.score ? `<span class="ep">${ICONS.star} ${Number(m.score).toFixed(1)}</span>` : ''}
-          <div class="cap"><b>${titleEsc}</b><small>${esc(m.type || m.day || '')}</small></div>`;
-        el.onclick = async (e) => {
-          e.preventDefault();
-          if (m.slug) return location.href = `detail.html?source=${encodeURIComponent(currentSource)}&slug=${encodeURIComponent(m.slug)}`;
-          toast('Procurando no catálogo…');
-          try {
-            const r = asList(await json(`${API}/api/search?q=${encodeURIComponent(m.title)}`));
-            if (r[0]) location.href = `detail.html?source=${encodeURIComponent(r[0].source || currentSource)}&slug=${encodeURIComponent(r[0].slug)}`;
-            else toast('Não disponível nas fontes');
-          } catch { toast('Falha na busca'); }
-        };
-        box.appendChild(el);
-      });
+      if (list && list.length) {
+        store.set(cacheKey, list.slice(0, 50));
+        renderSeasonCards(box, list);
+      } else if (!cached || !cached.length) {
+        failBox(box, `Nenhum anime encontrado para ${s.toUpperCase()} / ${y}.`, () => loadSeason(s));
+      }
     } catch {
-      failBox(box, 'Falha ao carregar temporada.', () => loadSeason(s));
+      if (reqId !== currentSeasonReqId) return;
+      if (!cached || !cached.length) {
+        failBox(box, 'Falha ao carregar temporada. Tente novamente.', () => loadSeason(s));
+      }
     }
   }
 
-  /* REQUIREMENT 6 & 7: PROFILE PREFERENCES SAVING */
   function renderProfile() {
-    $('#p-stats').textContent = `${favs().length} salvos · ${store.get('dls', []).length} downloads`;
+    if ($('#p-stats')) $('#p-stats').textContent = `${favs().length} salvos · ${store.get('dls', []).length} downloads`;
 
     const prefAudio = store.get('audio', 'leg');
     $$('[data-pref-audio]').forEach(b => b.classList.toggle('on', b.dataset.prefAudio === prefAudio));
@@ -592,6 +658,9 @@ if (document.body.dataset.page === 'home') {
 
     const prefAutoNext = store.get('auto_next', 'on');
     $$('[data-pref-autonext]').forEach(b => b.classList.toggle('on', b.dataset.prefAutonext === prefAutoNext));
+
+    const prefAutoFs = store.get('auto_fs', 'on');
+    $$('[data-pref-autofs]').forEach(b => b.classList.toggle('on', b.dataset.prefAutofs === prefAutoFs));
   }
 
   $$('[data-pref-audio]').forEach(b => b.onclick = () => {
@@ -620,13 +689,21 @@ if (document.body.dataset.page === 'home') {
     toast('Auto Próximo Episódio atualizado');
   });
 
-  $('#wipe').onclick = () => {
-    if (confirm('Deseja realmente apagar todo o histórico, salvos e preferências localmente?')) {
-      localStorage.clear();
-      toast('Dados limpos');
-      renderProfile();
-    }
-  };
+  $$('[data-pref-autofs]').forEach(b => b.onclick = () => {
+    store.set('auto_fs', b.dataset.prefAutofs);
+    renderProfile();
+    toast('Tela Cheia Automática atualizada');
+  });
+
+  if ($('#wipe')) {
+    $('#wipe').onclick = () => {
+      if (confirm('Deseja realmente apagar todo o histórico, salvos e preferências localmente?')) {
+        localStorage.clear();
+        toast('Dados limpos');
+        renderProfile();
+      }
+    };
+  }
 }
 
 /* ================= DETALHE ================= */
@@ -733,7 +810,6 @@ if (document.body.dataset.page === 'detail') {
       paintEps();
       $('#fav').classList.toggle('on', isFav(data.slug));
 
-      /* Animes Semelhantes por gênero */
       try {
         const allSimilar = [];
         for (const s of sourcesList) {
@@ -754,7 +830,6 @@ if (document.body.dataset.page === 'detail') {
         $('#tab-rel .grid').innerHTML = '<p class="empty">Sem semelhantes.</p>';
       }
 
-      /* Personagens via Jikan API */
       try {
         const jikanSearch = await fetch(`https://api.jikan.moe/v4/anime?q=${encodeURIComponent(data.title)}&limit=1`).then(r => r.json());
         const animeMalId = jikanSearch?.data?.[0]?.mal_id;
@@ -859,7 +934,7 @@ if (document.body.dataset.page === 'detail') {
     try {
       const n = ep.number || 1;
       const d = await json(`${API}/api/streams/${encodeURIComponent(slug)}/${n}?source=${encodeURIComponent(source)}&season=${season}&audio=${ep.audio}`);
-      const list = (d.streams || d.sources || []).filter(s => s.url && !isSiteAnimePage(s.url));
+      const list = (d.streams || d.sources || []).filter(s => s.url && !isSiteAnimePage(s.url) && !isJunkMedia(s.url));
       const best = list[list.length - 1];
       if (!best) return toast('Sem arquivo direto para baixar');
       const realUrl = unwrapOEmbed(best.url) || best.url;
@@ -908,7 +983,16 @@ if (document.body.dataset.page === 'player') {
   let server = store.get('srv', 'native');
   let qualityPref = store.get('quality_pref', 'auto');
   let autoNextPref = store.get('auto_next', 'on');
+  const autoFsPref = store.get('auto_fs', 'on');
   let info = null, plyr = null, tries = 0, sourcesList = DEFAULT_SOURCES;
+
+  const LOAD_TIMEOUT = 12000;
+  let loadGuard = null;
+  let nextTimer = null;
+  let nextShown = false;
+  let lastEmbed = null;
+  let candidates = [];
+  let candIdx = 0;
 
   $('#back').onclick = () => history.length > 1 ? history.back() : location.href = 'index.html';
 
@@ -959,16 +1043,98 @@ if (document.body.dataset.page === 'player') {
     });
   }
 
+  const epLabel = () => {
+    const t = String(info?.type || '').toLowerCase();
+    const n = String(ep).padStart(2, '0');
+    if (/ova/.test(t)) return `T${season} • OVA ${n}`;
+    if (/especial/.test(t)) return `T${season} • Especial ${n}`;
+    if (/filme|movie/.test(t)) return `T${season} • Filme ${n}`;
+    return `T${season} • Episódio ${n}`;
+  };
+
+  const titleOverlay = () => `<div class="player-title">${esc(epLabel())}</div>`;
+
+  function requestFs(el) {
+    const target = el || $('#stage');
+    try {
+      if (window.Android && window.Android.fullscreen) { window.Android.fullscreen(); return; }
+    } catch {}
+    try {
+      if (target?.requestFullscreen) target.requestFullscreen().catch(() => {});
+      else if (target?.webkitRequestFullscreen) target.webkitRequestFullscreen();
+    } catch {}
+  }
+
+  function clearNextCard() {
+    clearInterval(nextTimer);
+    nextTimer = null;
+    nextShown = false;
+    $('#next-card')?.remove();
+  }
+
+  function nextEpisode() {
+    const se = info?.seasons.find(s => s.season === season) || info?.seasons[0];
+    const list = (se?.episodes || []).filter(e => e.audio === audio);
+    const i = list.findIndex(e => (e.number || 0) === ep);
+    return i >= 0 ? list[i + 1] : null;
+  }
+
+  function showNextCard(nextEp) {
+    if (!nextEp || $('#next-card')) return;
+    let left = 10;
+    const card = document.createElement('div');
+    card.id = 'next-card';
+    card.className = 'next-card';
+    card.innerHTML = `<b>Próximo episódio</b>
+      <span>EP ${String(nextEp.number).padStart(2, '0')}</span>
+      <small>Começando em <i id="next-count">10</i>s</small>
+      <div class="row">
+        <button class="btn" id="next-go" type="button">Ir agora</button>
+        <button class="btn dark" id="next-cancel" type="button">Cancelar</button>
+      </div>`;
+    $('#stage').appendChild(card);
+    $('#next-go').onclick = () => { clearNextCard(); next(); };
+    $('#next-cancel').onclick = () => clearNextCard();
+    nextTimer = setInterval(() => {
+      left -= 1;
+      const c = $('#next-count');
+      if (c) c.textContent = String(left);
+      if (left <= 0) { clearNextCard(); next(); }
+    }, 1000);
+  }
+
+  function errorScreen(msg = 'Erro ao carregar episódio, tente novamente mais tarde.') {
+    clearTimeout(loadGuard);
+    clearNextCard();
+    $('#stage').innerHTML = `<div class="player-error">
+      <p>${esc(msg)}</p>
+      <div class="row">
+        <button class="btn" id="err-retry" type="button">Tentar novamente</button>
+        <button class="btn dark" id="err-embed" type="button">Usar player alternativo</button>
+      </div>
+    </div>`;
+    $('#err-retry').onclick = () => { tries = 0; candIdx = 0; load(); };
+    $('#err-embed').onclick = () => {
+      if (lastEmbed && mountFrame(lastEmbed)) return;
+      errorScreen('Nenhum player alternativo disponível para este episódio.');
+    };
+  }
+
+  /* FIX: embed Blogger entra direto no iframe, com título e permissões */
   function mountFrame(src) {
     const realSrc = unwrapOEmbed(src) || src;
     if (!realSrc || isSiteAnimePage(realSrc)) return false;
-    $('#stage').innerHTML = `<iframe src="${esc(realSrc)}" allow="autoplay;fullscreen;encrypted-media;picture-in-picture" allowfullscreen referrerpolicy="no-referrer-when-downgrade" style="width:100%;height:100%;border:0"></iframe>`;
+    clearTimeout(loadGuard);
+    clearNextCard();
+    try { plyr?.pause(); } catch {}
+    $('#stage').innerHTML = `<iframe src="${esc(realSrc)}" allow="autoplay; fullscreen; encrypted-media; picture-in-picture" allowfullscreen referrerpolicy="no-referrer-when-downgrade" style="width:100%;height:100%;border:0"></iframe>${titleOverlay()}`;
     $('#qbox').innerHTML = '';
     const retry = document.createElement('button');
     retry.className = 'tag';
     retry.textContent = 'Tentar vídeo direto';
-    retry.onclick = () => { server = 'native'; store.set('srv', 'native'); tries = 0; load(); };
+    retry.onclick = () => { server = 'native'; store.set('srv', 'native'); tries = 0; candIdx = 0; load(); };
     $('#qbox').appendChild(retry);
+    if (autoFsPref !== 'off') requestFs($('#stage'));
     return true;
   }
 
@@ -979,9 +1145,11 @@ if (document.body.dataset.page === 'player') {
       try {
         const qs = new URLSearchParams({ source: src, audio, season: String(season), n: String(ep) }).toString();
         const d = await json(`${API}/api/streams/${encodeURIComponent(slug)}/${ep}?${qs}`);
-        const list = (d.streams || d.sources || []).filter(s => (s.url || s.proxyUrl) && !isSiteAnimePage(s.url || s.proxyUrl));
+        /* FIX: descarta bg.mp4 e assets; sem direto válido sobra o iframe */
+        const list = (d.streams || d.sources || []).filter(s => (s.url || s.proxyUrl) && !isSiteAnimePage(s.url || s.proxyUrl) && !isJunkMedia(s.url || s.proxyUrl));
         const validIframes = (d.iframes || []).filter(u => u && !isSiteAnimePage(u));
-        const embedUrl = unwrapOEmbed((!isSiteAnimePage(d.iframe) ? d.iframe : null) || validIframes[0] || null);
+        const blogger = validIframes.find(u => isBloggerEmbed(u));
+        const embedUrl = unwrapOEmbed(blogger || (!isSiteAnimePage(d.iframe) ? d.iframe : null) || validIframes[0] || null);
         if (list.length || embedUrl) {
           source = src;
           store.set('source', source);
@@ -993,17 +1161,36 @@ if (document.body.dataset.page === 'player') {
     return null;
   }
 
+  function buildCandidates(list) {
+    const out = [];
+    for (const s of list) {
+      const direct = unwrapOEmbed(s.url) || s.url;
+      if (direct && !isSiteAnimePage(direct) && !isJunkMedia(direct)) out.push({ ...s, src: direct, via: 'direto' });
+    }
+    for (const s of list) {
+      if (!s.proxyUrl) continue;
+      out.push({ ...s, src: `${API}${s.proxyUrl}`, via: 'proxy' });
+    }
+    return out;
+  }
+
   async function load() {
+    clearTimeout(loadGuard);
+    clearNextCard();
+    candidates = [];
+    candIdx = 0;
     $('#stage').innerHTML = '<p class="empty">Resolvendo episódio…</p>';
     $('#qbox').innerHTML = '';
     try {
       const resolved = await resolveStreamWithFallback();
       if (!resolved) {
-        $('#stage').innerHTML = '<p class="empty">Episódio sem stream disponível em nenhum servidor. Tente outro áudio.</p>';
+        errorScreen('Episódio sem stream disponível em nenhum servidor. Tente outro áudio.');
         return;
       }
-      const { d, list, embedUrl } = resolved;
+      const { list, embedUrl } = resolved;
+      lastEmbed = embedUrl || null;
 
+      /* FIX: só vai para iframe se pedido, se não houver direto, ou se o direto for lixo */
       if (server === 'iframe' && embedUrl) {
         if (mountFrame(embedUrl)) {
           store.set('continue', [{ slug, source, title: info?.title || slug, cover: info?.cover, ep },
@@ -1012,29 +1199,28 @@ if (document.body.dataset.page === 'player') {
         }
       }
 
-      if (!list.length) {
+      candidates = buildCandidates(list);
+
+      if (!candidates.length) {
         if (embedUrl && mountFrame(embedUrl)) {
           store.set('continue', [{ slug, source, title: info?.title || slug, cover: info?.cover, ep },
             ...store.get('continue', []).filter(x => x.slug !== slug)].slice(0, 12));
           return;
         }
-        $('#stage').innerHTML = '<p class="empty">Episódio sem stream disponível. Tente outro áudio.</p>';
+        errorScreen('Episódio sem stream disponível. Tente outro áudio.');
         return;
       }
 
-      // Pick stream according to preferred quality if possible
-      let best = list[list.length - 1];
+      let ordered = list.slice().sort((a, b) => (Number(b.itag) || 0) - (Number(a.itag) || 0));
       if (qualityPref !== 'auto') {
-        const match = list.find(s => String(s.quality || s.label || '').includes(qualityPref));
-        if (match) best = match;
+        const match = ordered.filter(s => String(s.quality || s.label || '').includes(qualityPref));
+        if (match.length) ordered = [...match, ...ordered.filter(s => !match.includes(s))];
       }
+      candidates = buildCandidates(ordered);
 
-      const rawBestSrc = best.proxyUrl ? `${API}${best.proxyUrl}` : best.url;
-      const bestSrc = unwrapOEmbed(rawBestSrc) || rawBestSrc;
-
-      /* REQUIREMENT 4: Immersive Player Layout & Auto Fullscreen Request */
       $('#stage').innerHTML = `<div class="adv-player-wrapper" style="position:relative;width:100%;height:100%;background:#000">
-        <video id="v" playsinline crossorigin style="width:100%;height:100%;display:block"></video>
+        <video id="v" autoplay playsinline controls preload="metadata" style="width:100%;height:100%;display:block"></video>
+        ${titleOverlay()}
         <div class="adv-overlay" style="position:absolute;inset:0;pointer-events:none;display:flex;flex-direction:column;justify-content:space-between;padding:12px">
           <div style="display:flex;justify-content:space-between;align-items:center;pointer-events:auto">
             <span class="ep-badge" style="background:var(--red);color:#fff;padding:3px 8px;border-radius:4px;font-size:11px;font-weight:900">EP ${ep}</span>
@@ -1056,37 +1242,55 @@ if (document.body.dataset.page === 'player') {
       </div>`;
 
       const video = $('#v');
-      video.src = bestSrc;
       if (info?.cover) video.poster = info.cover.startsWith('http') ? info.cover : img(info.cover);
 
-      // REQUIREMENT 4: Automatic Fullscreen Request
-      const triggerFullscreen = () => {
-        try {
-          if (video.requestFullscreen) video.requestFullscreen().catch(() => {});
-          else if (video.webkitRequestFullscreen) video.webkitRequestFullscreen();
-        } catch {}
+      const tryCandidate = (i) => {
+        clearTimeout(loadGuard);
+        if (i >= candidates.length) {
+          if (lastEmbed && mountFrame(lastEmbed)) { toast('Trocando para player embed'); return; }
+          errorScreen();
+          return;
+        }
+        candIdx = i;
+        video.src = candidates[i].src;
+        video.load();
+        video.play().catch(() => {});
+        loadGuard = setTimeout(() => {
+          if (video.readyState < 2) tryCandidate(i + 1);
+        }, LOAD_TIMEOUT);
       };
-      video.addEventListener('play', triggerFullscreen, { once: true });
 
-      video.addEventListener('error', () => {
-        if (tries++ < 2) { toast('Link expirou, resolvendo de novo'); load(); return; }
-        if (embedUrl && mountFrame(embedUrl)) toast('Trocando para player embed');
-        else $('#stage').innerHTML = '<p class="empty">Não foi possível reproduzir este stream.</p>';
-      });
+      video.addEventListener('loadeddata', () => clearTimeout(loadGuard));
+      video.addEventListener('playing', () => clearTimeout(loadGuard));
+      video.addEventListener('error', () => { clearTimeout(loadGuard); tryCandidate(candIdx + 1); });
+
+      if (autoFsPref !== 'off') {
+        requestFs(video);
+        video.addEventListener('loadedmetadata', () => { if (video.paused) requestFs(video); }, { once: true });
+      }
 
       if (window.Plyr) {
         plyr = new Plyr(video, {
           controls: ['play-large', 'play', 'progress', 'current-time', 'duration', 'mute', 'volume', 'settings', 'pip', 'fullscreen'],
           settings: ['quality', 'speed'],
-          quality: { default: +best.itag || 720, options: list.map(s => +s.itag || 720) },
           speed: { selected: 1, options: [0.5, 1, 1.25, 1.5, 2] },
           storage: { enabled: true, key: 'ma-plyr' }
         });
-        video.addEventListener('timeupdate', saveProgress);
-        if (autoNextPref !== 'off') video.addEventListener('ended', next);
       } else {
         video.controls = true;
-        if (autoNextPref !== 'off') video.addEventListener('ended', next);
+      }
+
+      video.addEventListener('timeupdate', () => {
+        saveProgress();
+        const d = video.duration;
+        if (!d || autoNextPref === 'off' || nextShown) return;
+        if (d - video.currentTime <= 15) {
+          const n = nextEpisode();
+          if (n) { nextShown = true; showNextCard(n); }
+        }
+      });
+      if (autoNextPref !== 'off') {
+        video.addEventListener('ended', () => { clearNextCard(); next(); });
       }
 
       $('#btn-10s')?.addEventListener('click', () => { video.currentTime = Math.max(0, video.currentTime - 10); });
@@ -1101,22 +1305,17 @@ if (document.body.dataset.page === 'player') {
         video.onpause = () => ppBtn.textContent = '▶';
       }
 
-      $('#range-vol')?.addEventListener('input', (e) => {
-        video.volume = e.target.value;
-      });
-      $('#range-bright')?.addEventListener('input', (e) => {
-        video.style.filter = `brightness(${e.target.value})`;
-      });
+      $('#range-vol')?.addEventListener('input', (e) => { video.volume = e.target.value; });
+      $('#range-bright')?.addEventListener('input', (e) => { video.style.filter = `brightness(${e.target.value})`; });
 
-      list.slice().reverse().forEach(s => {
+      ordered.slice().reverse().forEach(s => {
         const b = document.createElement('button');
         b.className = 'tag';
-        b.textContent = s.quality || s.label || 'HD';
+        b.textContent = (s.quality || s.label || 'HD') + (isJunkMedia(s.url) ? ' · bg' : '');
         b.onclick = () => {
-          const rawSrc = s.proxyUrl ? `${API}${s.proxyUrl}` : s.url;
-          const srcUrl = unwrapOEmbed(rawSrc) || rawSrc;
-          if (plyr) { plyr.source = { type: 'video', sources: [{ src: srcUrl, type: s.mime || 'video/mp4' }] }; plyr.play(); }
-          else { video.src = srcUrl; video.play(); }
+          const direct = unwrapOEmbed(s.url) || s.url;
+          const idx = candidates.findIndex(c => c.src === direct);
+          if (idx >= 0) tryCandidate(idx);
           $$('#qbox .tag').forEach(x => x.classList.toggle('on', x === b));
         };
         $('#qbox').appendChild(b);
@@ -1127,15 +1326,18 @@ if (document.body.dataset.page === 'player') {
       dl.className = 'tag dl';
       dl.innerHTML = `${ICONS.dl}Baixar`;
       dl.onclick = () => {
-        saveFile(best.url, `${slug}-T${season}E${ep}-${best.quality}.mp4`.replace(/\s+/g, '_'));
+        const best = ordered.find(s => !isJunkMedia(s.url)) || ordered[0];
+        saveFile(unwrapOEmbed(best.url) || best.url, `${slug}-T${season}E${ep}-${best.quality}.mp4`.replace(/\s+/g, '_'));
         store.set('dls', [...store.get('dls', []), { title: info?.title || slug, ep, quality: best.quality, url: best.url }].slice(-40));
       };
       $('#qbox').appendChild(dl);
 
+      tryCandidate(0);
+
       store.set('continue', [{ slug, source, title: info?.title || slug, cover: info?.cover, ep },
         ...store.get('continue', []).filter(x => x.slug !== slug)].slice(0, 12));
     } catch {
-      $('#stage').innerHTML = '<p class="empty">Episódio indisponível.</p>';
+      errorScreen();
     }
   }
 

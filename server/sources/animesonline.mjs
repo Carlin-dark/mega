@@ -1,7 +1,13 @@
 import { fetchText } from '../lib/http.mjs';
 import { absUrl, cleanText, decodeEntities, titleFromSlug, uniqueBy } from '../lib/text.mjs';
 import { readRsc, readJsonKey } from '../lib/next.mjs';
-import { resolveStreams, extractDirectVideosFromText, isAnimePageUrl, isBlockedEmbed } from '../lib/stream.mjs';
+import {
+  resolveStreams,
+  extractDirectVideosFromText,
+  isAnimePageUrl,
+  isBlockedEmbed,
+  bloggerTokens,
+} from '../lib/stream.mjs';
 
 const BASES = ['https://animesonline.blue', 'https://animesonline.cloud'];
 const BASE = BASES[0];
@@ -289,18 +295,24 @@ export async function streams(slug, epId, audio = 'leg', season = 1) {
     if (!foundIframes.includes(abs)) foundIframes.push(abs);
   };
 
+  /* FIX: tokens do blogger entram deduplicados por token, preservando todas as qualidades */
+  const pushBlogger = (html, base) => {
+    for (const url of bloggerTokens(html, base)) {
+      const token = url.split('token=')[1];
+      if (foundIframes.some((u) => u.includes(token))) continue;
+      if (!foundIframes.includes(url)) foundIframes.push(url);
+    }
+  };
+
   const collectFromHtml = (html, baseUrl) => {
     const unescaped = decodeEntities(String(html || ''))
       .replace(/\\u0026/g, '&')
       .replace(/\\\//g, '/');
 
     for (const m of unescaped.matchAll(/<iframe[^>]+src=["']([^"']+)["']/gi)) pushIframe(m[1], baseUrl);
+    pushBlogger(unescaped, baseUrl);
 
-    for (const m of unescaped.matchAll(/(?:https?:)?\/\/www\.blogger\.com\/video\.g\?token=[A-Za-z0-9_=-]+/gi)) {
-      pushIframe(m[0].startsWith('http') ? m[0] : `https:${m[0]}`, baseUrl);
-    }
-
-    for (const m of unescaped.matchAll(/https?:\/\/[^"'\s<>\\]+(?:embed|player|video\.g|stream)[^"'\s<>\\]*/gi)) {
+    for (const m of unescaped.matchAll(/https?:\/\/[^"'\s<>\\]+(?:embed|player|stream)[^"'\s<>\\]*/gi)) {
       pushIframe(m[0], baseUrl);
     }
 
@@ -322,26 +334,25 @@ export async function streams(slug, epId, audio = 'leg', season = 1) {
     for (const field of ['playerUrl', 'player', 'iframe', 'embed']) {
       if (typeof data[field] === 'string' && data[field]) pushIframe(data[field], b);
     }
+    pushBlogger(res.body, b);
     for (const m of String(res.body).matchAll(/https?:\/\/[^"'\s<>\\]+/g)) {
-      if (/blogger\.com\/video\.g|videoplayback|\.mp4(\?|$)|\.m3u8(\?|$)/.test(m[0])) pushIframe(m[0], b);
+      if (/videoplayback|\.mp4(\?|$)|\.m3u8(\?|$)/.test(m[0])) pushIframe(m[0], b);
     }
 
     if (foundIframes.length) break;
   }
 
-  // 3) fallback: varre o HTML do episodio e o payload RSC
-  if (!foundIframes.length && !directSources.length) {
-    for (const b of BASES) {
-      const res = await fetchText(watchUrl(b), { referer: `${b}/anime/${slug}`, cacheTtl: 0, timeout: 15000 });
-      if (!res.ok || !res.body) continue;
-      pageUrl = watchUrl(b);
-
-      collectFromHtml(res.body, b);
-      const rsc = readRsc(res.body);
-      if (rsc) collectFromHtml(rsc, b);
-
-      if (foundIframes.length || directSources.length) break;
-    }
+  /* FIX: a varredura do HTML agora é SEMPRE feita — a API devolve só o primeiro
+     player, as demais qualidades/opções só existem no HTML da página. */
+  for (const b of BASES) {
+    const scan = watchUrl(b);
+    const res = await fetchText(scan, { referer: `${b}/anime/${slug}`, cacheTtl: 0, timeout: 15000 });
+    if (!res.ok || !res.body) continue;
+    pageUrl = scan;
+    collectFromHtml(res.body, b);
+    const rsc = readRsc(res.body);
+    if (rsc) collectFromHtml(rsc, b);
+    if (foundIframes.length || directSources.length) break;
   }
 
   const iframes = uniqueBy(foundIframes, (x) => x);

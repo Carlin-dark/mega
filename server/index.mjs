@@ -6,7 +6,7 @@ import { fileURLToPath } from 'node:url';
 
 import { UA_STRING, headersFor, fetchText } from './lib/http.mjs';
 import { getSource, listSources, DEFAULT_SOURCE } from './sources/registry.mjs';
-import { isAnimePageUrl, isJunkMedia } from './lib/stream.mjs';
+import { isAnimePageUrl, isJunkMedia, isBloggerEmbed } from './lib/stream.mjs';
 import * as jikan from './sources/jikan.mjs';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
@@ -186,10 +186,14 @@ app.get(['/api/anime/:slug', '/api/anime/:source/:slug'], async (req, res) => {
 });
 
 app.get(['/api/streams/:slug/:ep', '/api/streams/:source/:slug/:ep'], async (req, res) => {
+  /* FIX: no-store desde a entrada — inclusive no erro, que antes ia cacheável para o cliente */
+  res.set('cache-control', 'no-store, max-age=0, must-revalidate');
+
   const season = Number(req.query.season) || 1;
   const audio = req.query.audio === 'dub' ? 'dub' : 'leg';
   const epNum = Number(req.query.n || req.params.ep) || 1;
   const preferredSrc = pick(req);
+  const debug = req.query.debug === '1';
 
   const trySource = async (src, targetSlug, targetEpId) => {
     let resolvedEpId = String(targetEpId || epNum);
@@ -214,11 +218,13 @@ app.get(['/api/streams/:slug/:ep', '/api/streams/:source/:slug/:ep'], async (req
         hls: Boolean(x.hls),
         referer: x.referer || out.pageUrl || src.meta.base,
         itag: x.itag || 900 + i,
+        expiresAt: x.expiresAt || null,
       }));
 
     const validIframes = (out.iframes || []).filter((u) => u && !isAnimePageUrl(u));
-    const blogger = validIframes.find((u) => /blogger\.com\/video\.g/.test(u));
-    const iframe = blogger || validIframes[0] || null;
+    /* FIX: blogger na frente — é o embed que realmente reproduz */
+    const orderedIframes = [...validIframes].sort((a, b) => Number(isBloggerEmbed(b)) - Number(isBloggerEmbed(a)));
+    const iframe = orderedIframes[0] || null;
 
     return {
       animeTitle,
@@ -235,7 +241,10 @@ app.get(['/api/streams/:slug/:ep', '/api/streams/:source/:slug/:ep'], async (req
           proxyUrl: `/api/proxy-stream?u=${encodeURIComponent(s.url)}&ref=${encodeURIComponent(s.referer || '')}`,
         })),
         iframe,
-        iframes: validIframes,
+        iframes: orderedIframes,
+        resolvedAt: Date.now(),
+        expiresAt: sources.reduce((min, s) => (s.expiresAt && (!min || s.expiresAt < min) ? s.expiresAt : min), null),
+        pageUrl: out.pageUrl || null,
       },
     };
   };
@@ -265,9 +274,13 @@ app.get(['/api/streams/:slug/:ep', '/api/streams/:source/:slug/:ep'], async (req
       }
     }
 
-    res.set('cache-control', 'no-store').json(finalPayload);
+    const hasSource = Boolean(finalPayload.sources.length || finalPayload.iframe);
+    const body = { ok: hasSource, ...finalPayload };
+    if (debug) body.diagnostics = { preferredSource: preferredSrc.meta.id, triedSlug: req.params.slug, triedEp: req.params.ep };
+
+    res.status(hasSource ? 200 : 404).set('cache-control', 'no-store').json(body);
   } catch (e) {
-    fail(res, e);
+    res.set('cache-control', 'no-store').status(502).json({ ok: false, error: String(e?.message || e) });
   }
 });
 

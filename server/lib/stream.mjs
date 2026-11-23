@@ -14,6 +14,9 @@ const ITAG = {
 const JUNK_RE = /(?:^|[/_\-.])(bg|background|banner|poster|thumb|thumbnail|trailer|placeholder|preview|sprite)(?:[-_.][\w-]+)?\.(?:mp4|webm|m4v|ogv)(?:[?#]|$)/i;
 const ASSET_RE = /(?:\/wp-content\/|\/assets\/|\/static\/|\/tema\/|\/themes\/|\/img\/|\/images\/)[^?#]*\.(?:mp4|webm|m4v)(?:[?#]|$)/i;
 
+const BLOGGER_TOKEN_RE = /blogger\.com\/(?:video|player)\.g\?(?:[^"'<>\s]*?&)?token=([A-Za-z0-9_=-]{16,})/gi;
+const MAX_EMBEDS = 8;
+
 export function isJunkMedia(url = '') {
   const u = String(url || '');
   if (!u) return true;
@@ -65,6 +68,28 @@ export function normalizeMediaUrl(raw, base) {
   } catch {
     return null;
   }
+}
+
+/* FIX: extrai TODOS os tokens do blogger da página, deduplicando por token.
+   A mesma página pode trazer várias qualidades/opções; perder as demais
+   era o que deixava o player sem fonte. */
+export function bloggerTokens(html = '', base = '') {
+  const text = decodeEntities(String(html || '')).replace(/\\u0026/g, '&').replace(/\\\//g, '/');
+  const seen = new Set();
+  const out = [];
+  for (const m of text.matchAll(BLOGGER_TOKEN_RE)) {
+    const token = m[1].replace(/[.,;)\\]+$/, '');
+    if (!token || seen.has(token)) continue;
+    seen.add(token);
+    out.push(`https://www.blogger.com/video.g?token=${token}`);
+  }
+  for (const m of text.matchAll(/["']token["']\s*:\s*["']([A-Za-z0-9_=-]{16,})["']/gi)) {
+    const token = m[1];
+    if (seen.has(token)) continue;
+    seen.add(token);
+    out.push(`https://www.blogger.com/video.g?token=${token}`);
+  }
+  return out;
 }
 
 function unwrapOEmbedText(text = '', base = '') {
@@ -145,7 +170,7 @@ export function parseStreamingData(html, referer) {
     });
   };
 
-  for (const marker of ['"streamingData"', 'streamingData:', '"adaptiveFormats"', 'VIDEO_CONFIG', '"formats"']) {
+  for (const marker of ['"streamingData"', 'streamingData:', '"adaptiveFormats"', 'VIDEO_CONFIG', '"formats"', '"streams"']) {
     const idx = src.indexOf(marker);
     if (idx < 0) continue;
     const brace = src.indexOf('{', idx);
@@ -153,7 +178,13 @@ export function parseStreamingData(html, referer) {
     if (!raw) continue;
     try {
       const data = JSON.parse(raw);
-      const all = [...(data.formats || []), ...(data.adaptiveFormats || []), ...(data.streamingData?.formats || []), ...(data.streamingData?.adaptiveFormats || [])];
+      const all = [
+        ...(data.formats || []),
+        ...(data.adaptiveFormats || []),
+        ...(data.streams || []),
+        ...(data.streamingData?.formats || []),
+        ...(data.streamingData?.adaptiveFormats || []),
+      ];
       for (const f of all) pushFormat(f);
       if (out.length) break;
     } catch {}
@@ -294,8 +325,9 @@ export async function resolveStreams(iframes, referer) {
     ...cleanIframes.filter((u) => isBloggerEmbed(u)),
     ...cleanIframes.filter((u) => !isBloggerEmbed(u)),
   ];
+  const unique = [...new Set(ordered)].slice(0, MAX_EMBEDS);
   const results = await Promise.all(
-    ordered.slice(0, 6).map((u) => resolvePlayer(u, referer).catch(() => []))
+    unique.map((u) => resolvePlayer(u, referer).catch(() => []))
   );
   const flat = results.flat().filter((s) => s.url && !isJunkMedia(s.url));
   const seen = new Set();

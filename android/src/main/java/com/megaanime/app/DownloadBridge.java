@@ -32,6 +32,14 @@ public class DownloadBridge {
     act.requestPermissions(new String[]{Manifest.permission.WRITE_EXTERNAL_STORAGE}, 1001);
   }
 
+  /* FIX: tela cheia disparada pelo player (auto_fs). O JS chama window.Android.fullscreen() */
+  @JavascriptInterface
+  public void fullscreen() {
+    act.runOnUiThread(() -> {
+      if (act instanceof MainActivity) ((MainActivity) act).enterImmersive();
+    });
+  }
+
   @JavascriptInterface
   public void download(final String url, final String name, final String mime, final String referer) {
     act.runOnUiThread(() -> {
