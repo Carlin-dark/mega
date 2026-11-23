@@ -1,12 +1,8 @@
 {
-  "name": "Mega Animes",
-  "version": "1.0.0",
-  "private": true,
+  "name": "mega-server",
   "type": "module",
+  "private": true,
   "engines": { "node": ">=18" },
-  "scripts": {
-    "start": "node proxy.mjs",
-    "dev": "node --watch proxy.mjs"
-  },
-  "dependencies": { "express": "^4.19.2" }
+  "scripts": { "start": "node index.mjs" },
+  "dependencies": { "express": "^4.19.2", "compression": "^1.7.4" }
 }
