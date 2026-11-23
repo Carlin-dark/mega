@@ -443,7 +443,7 @@ function card(a, ep, srcOverride) {
   const c = cover(a);
   const titleEsc = esc(a.title || '');
   const subtitle = esc([a.type, a.year].filter(Boolean).join(' • '));
-  const coverUrl = c ? img(c) : PLACEHOLDER;
+  const coverUrl = c ? img(c) : '';
   el.innerHTML = `${ep ? `<span class="ep">EP ${esc(ep)}</span>` : ''}
     <img loading="${coverSeq++ < EAGER_LIMIT ? 'eager' : 'lazy'}" src="${coverUrl}" alt="${titleEsc}" data-proxy="${esc(c ? img(c) : '')}" data-title="${titleEsc}" decoding="async" referrerpolicy="no-referrer" onerror="__coverFail(this)">
     <div class="pl"><span>${ICONS.play}</span></div>
@@ -453,6 +453,9 @@ function card(a, ep, srcOverride) {
       if (u) {
         const im = el.querySelector('img');
         if (im) im.src = u;
+      } else {
+        const im = el.querySelector('img');
+        if (im) im.src = PLACEHOLDER;
       }
     });
   }

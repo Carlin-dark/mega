@@ -10,6 +10,16 @@ export function apiUrl(path = '') {
   return API_BASE ? `${API_BASE}${cleanPath}` : cleanPath;
 }
 
+export const PLACEHOLDER = 'data:image/svg+xml;utf8,' + encodeURIComponent('<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 300 450"><rect width="300" height="450" fill="#15151c"/><text x="150" y="230" fill="#5a5a6a" font-family="sans-serif" font-size="18" text-anchor="middle">Sem capa</text></svg>');
+
+export function __coverFail(im) {
+  if (!im || im.dataset.dead) return;
+  im.dataset.dead = '1';
+  const proxy = im.dataset.proxy || '';
+  if (proxy && im.src !== proxy) { im.src = proxy; return; }
+  im.src = PLACEHOLDER;
+}
+
 export const img = (u, alt = '') =>
   u
     ? `<img loading="lazy" decoding="async" referrerpolicy="no-referrer" src="${apiUrl(`/img?u=${encodeURIComponent(u)}`)}" data-proxy="${apiUrl(`/img?u=${encodeURIComponent(u)}`)}" data-title="${String(alt || '').replace(/"/g, '&quot;')}" alt="${String(alt || '').replace(/"/g, '&quot;')}" onerror="__coverFail(this)">`

@@ -1,4 +1,4 @@
-import { $, $$, apiUrl, skeletons } from './ui.js';
+import { $, $$, apiUrl, skeletons, PLACEHOLDER, __coverFail } from './ui.js';
 
 const NOW = new Date().getFullYear();
 const MIN_YEAR = 2000;

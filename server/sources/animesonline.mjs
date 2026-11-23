@@ -73,15 +73,21 @@ function coverFrom(inner) {
   if (next) {
     try { return decodeURIComponent(next[1]); } catch {}
   }
-  const abs = inner.match(/(?:src|data-src|data-lazy-src|data-original)="(https?:\/\/[^"]+?\.(?:jpg|jpeg|png|webp|avif)[^"]*)"/i);
+  const abs = inner.match(/(?:src|data-src|data-lazy-src|data-original|data-bg)="(https?:\/\/[^"]+?\.(?:jpg|jpeg|png|webp|avif)[^"]*)"/i);
   if (abs?.[1]) return abs[1];
   const srcset = inner.match(/srcset="([^"]+)"/i);
   if (srcset?.[1]) {
     const first = srcset[1].split(',')[0].trim().split(/\s+/)[0];
     if (first) return first.startsWith('http') ? first : absUrl(first, BASE);
   }
-  const rel = inner.match(/(?:src|data-src|data-lazy-src|data-original)="(\/[^"]+?\.(?:jpg|jpeg|png|webp|avif)[^"]*)"/i);
-  return rel?.[1] ? absUrl(rel[1], BASE) : null;
+  const rel = inner.match(/(?:src|data-src|data-lazy-src|data-original|data-bg)="(\/[^"]+?\.(?:jpg|jpeg|png|webp|avif)[^"]*)"/i);
+  if (rel?.[1]) return absUrl(rel[1], BASE);
+  const bg = inner.match(/style=["'][^"']*?(?:background(?:-image)?:\s*url\(['"]?([^'")]+)['"]?\)/i);
+  if (bg?.[1]) {
+    const u = bg[1].startsWith('http') ? bg[1] : absUrl(bg[1], BASE);
+    if (u) return u;
+  }
+  return null;
 }
 
 function parseCard(inner, slugRaw) {
