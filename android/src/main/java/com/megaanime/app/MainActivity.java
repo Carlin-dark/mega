@@ -1,6 +1,7 @@
 package com.megaanime.app;
 
 import android.annotation.SuppressLint;
+import android.content.pm.PackageManager;
 import android.os.Bundle;
 import android.view.View;
 import android.view.ViewGroup;
@@ -10,6 +11,7 @@ import android.webkit.WebSettings;
 import android.webkit.WebView;
 import android.webkit.WebViewClient;
 import android.widget.FrameLayout;
+import android.widget.Toast;
 import androidx.appcompat.app.AppCompatActivity;
 
 public class MainActivity extends AppCompatActivity {
@@ -18,6 +20,7 @@ public class MainActivity extends AppCompatActivity {
     private FrameLayout root;
     private View customView;
     private WebChromeClient.CustomViewCallback customCallback;
+    private DownloadBridge bridge;
 
     @SuppressLint("SetJavaScriptEnabled")
     @Override
@@ -40,16 +43,29 @@ public class MainActivity extends AppCompatActivity {
         s.setUseWideViewPort(true);
         s.setCacheMode(WebSettings.LOAD_DEFAULT);
         s.setMixedContentMode(WebSettings.MIXED_CONTENT_ALWAYS_ALLOW);
+        s.setAllowFileAccess(true);
+        s.setAllowContentAccess(true);
+        s.setJavaScriptCanOpenWindowsAutomatically(true);
+        s.setSupportMultipleWindows(false);
 
-        web.setWebViewClient(new WebViewClient());
+        web.setWebViewClient(new WebViewClient() {
+            @Override
+            public boolean shouldOverrideUrlLoading(WebView view, String url) {
+                if (url != null && url.startsWith("file://")) return false;
+                return false;
+            }
+        });
 
         // ponte de download: window.Android.download(url, nome, mime, referer)
-        web.addJavascriptInterface(new DownloadBridge(this), "Android");
+        bridge = new DownloadBridge(this);
+        web.addJavascriptInterface(bridge, "Android");
+
+        // pede o armazenamento na abertura
+        bridge.ensurePermission();
 
         // fallback para links diretos de vídeo
         web.setDownloadListener((url, ua, cd, mime, len) ->
-                new DownloadBridge(MainActivity.this)
-                        .download(url, "mega-anime.mp4", mime, "https://www.blogger.com/"));
+                bridge.download(url, "mega-anime.mp4", mime, "https://www.blogger.com/"));
 
         web.setWebChromeClient(new WebChromeClient() {
 
@@ -78,7 +94,19 @@ public class MainActivity extends AppCompatActivity {
             }
         });
 
-        web.loadUrl("file:///android_asset/index.html");
+        web.loadUrl("file:///android_asset/web/index.html");
+    }
+
+    @Override
+    public void onRequestPermissionsResult(int code, String[] perms, int[] results) {
+        super.onRequestPermissionsResult(code, perms, results);
+        if (code == 1001) {
+            if (results.length > 0 && results[0] == PackageManager.PERMISSION_GRANTED) {
+                Toast.makeText(this, "Armazenamento liberado", Toast.LENGTH_SHORT).show();
+            } else {
+                Toast.makeText(this, "Sem permissao o download nao funciona", Toast.LENGTH_LONG).show();
+            }
+        }
     }
 
     private void setImmersive(boolean on) {

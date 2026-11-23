@@ -177,3 +177,20 @@ button{font-family:inherit;color:inherit}
   .hero{height:min(60vh,480px)}
   .detail-wrap,.watch{max-width:900px;margin:0 auto}
 }
+
+/* carrossel */
+.hero .inner{animation:heroIn .55s cubic-bezier(.2,.8,.2,1) both}
+.hero img{animation:heroZoom 7s ease-out both}
+.hero .bar{position:absolute;left:0;right:0;bottom:0;height:3px;background:rgba(255,255,255,.14);z-index:3}
+.hero .bar i{display:block;height:100%;width:0;background:var(--red)}
+.hero .bar i.run{animation:barFill 6s linear forwards}
+.hero .dots{position:absolute;right:14px;bottom:26px;display:flex;gap:5px;z-index:3}
+.hero .dots b{width:6px;height:6px;border-radius:50%;background:rgba(255,255,255,.35);transition:.2s}
+.hero .dots b.on{background:var(--red);width:16px;border-radius:3px}
+@keyframes heroIn{from{opacity:0;transform:translateY(18px)}to{opacity:1;transform:none}}
+@keyframes heroZoom{from{transform:scale(1.08)}to{transform:scale(1)}}
+@keyframes barFill{to{width:100%}}
+@media(prefers-reduced-motion:reduce){
+  .hero .inner,.hero img,.hero .bar i.run{animation:none}
+  .hero .bar i{width:100%}
+}
