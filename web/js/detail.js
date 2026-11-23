@@ -8,12 +8,12 @@ let allSources = [];
 async function loadSources() {
   const meta = await fetch(apiUrl('/api/sources')).then(r => r.json()).catch(() => null);
   allSources = meta?.sources || [
-    { id: 'animesonline', name: 'AnimesOnline' },
-    { id: 'animefire', name: 'AnimeFire' },
-    { id: 'betteranime', name: 'BetterAnime' },
-    { id: 'animesroll', name: 'AnimesRoll' },
-    { id: 'anitube', name: 'AniTube' },
-  ];
+  { id: 'animesonlinecc', name: 'AnimesOnlineCC' },
+  { id: 'animesonline', name: 'AnimesOnline' },
+  { id: 'animefire', name: 'AnimeFire' },
+  { id: 'betteranime', name: 'BetterAnime' },
+  { id: 'animesroll', name: 'AnimesRoll' },
+];
 }
 
 async function getPosterFallback(title) {

@@ -16,11 +16,11 @@ const isJunkMedia = (u = '') => {
 const isBloggerEmbed = (u = '') => /blogger\.com\/video\.g|video\.g\?token=/i.test(String(u || ''));
 
 const DEFAULT_SOURCES = [
-  { id: 'animesonline', name: 'Servidor 1' },
-  { id: 'animefire', name: 'Servidor 2' },
-  { id: 'betteranime', name: 'Servidor 3' },
-  { id: 'animesroll', name: 'Servidor 4' },
-  { id: 'anitube', name: 'Servidor 5' }
+  { id: 'animesonlinecc', name: 'Servidor 1' },
+  { id: 'animesonline', name: 'Servidor 2' },
+  { id: 'animefire', name: 'Servidor 3' },
+  { id: 'betteranime', name: 'Servidor 4' },
+  { id: 'animesroll', name: 'Servidor 5' }
 ];
 
 const store = {

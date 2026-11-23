@@ -1,5 +1,6 @@
 export const $ = (s, r = document) => r.querySelector(s);
 export const $$ = (s, r = document) => [...r.querySelectorAll(s)];
+export function savedSource() { return localStorage.getItem('mega:source') || 'animesonlinecc'; }
 
 const RAW_BASE = typeof window !== 'undefined' && window.API_BASE ? String(window.API_BASE).trim() : '';
 export const API_BASE = RAW_BASE.replace(/\/+$/, '');

@@ -1,0 +1,37 @@
+<!doctype html>
+<html lang="pt-BR"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>MEGA — Calendário</title><link rel="stylesheet" href="css/style.css"></head>
+<body>
+<header><a class="logo" href="index.html">MEGA<span>.</span></a>
+<nav><a href="index.html">Início</a><a href="calendar.html" class="on">Calendário</a></nav></header>
+
+<!-- FIX: barra de filtros com seletor de ano estilizado (2030 → 2000) -->
+<div class="cal-bar">
+  <div class="cal-seasons" role="tablist" aria-label="Temporada">
+    <button type="button" class="cal-s" data-s="winter" role="tab">Inverno</button>
+    <button type="button" class="cal-s" data-s="spring" role="tab">Primavera</button>
+    <button type="button" class="cal-s" data-s="summer" role="tab">Verão</button>
+    <button type="button" class="cal-s" data-s="fall" role="tab">Outono</button>
+  </div>
+
+  <div class="yearpick-wrap">
+    <button type="button" class="yearpick-btn" id="yearpick-btn" aria-haspopup="dialog">
+      <span id="yearpick-label"></span>
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" style="width:14px;height:14px"><path d="m6 9 6 6 6-6"/></svg>
+    </button>
+    <div class="yearpick" id="yearpick" role="dialog" aria-label="Escolher ano">
+      <div class="yearpick-head">
+        <b>Escolha o ano</b>
+        <button type="button" class="yearpick-x" id="yearpick-x" aria-label="Fechar">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round"><path d="M18 6 6 18M6 6l12 12"/></svg>
+        </button>
+      </div>
+      <div class="yearpick-grid" id="yearpick-grid"></div>
+    </div>
+  </div>
+</div>
+
+<main class="grid" id="grid"></main>
+<script type="module" src="js/calendar.js"></script>
+</body></html>

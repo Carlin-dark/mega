@@ -984,15 +984,22 @@ if (document.body.dataset.page === 'player') {
   let qualityPref = store.get('quality_pref', 'auto');
   let autoNextPref = store.get('auto_next', 'on');
   const autoFsPref = store.get('auto_fs', 'on');
-  let info = null, plyr = null, tries = 0, sourcesList = DEFAULT_SOURCES;
+  let info = null, plyr = null, sourcesList = DEFAULT_SOURCES;
 
   const LOAD_TIMEOUT = 12000;
+  const STALE_MS = 20 * 60 * 1000;
+  const MAX_SRC = 3;
+  const NEXT_AT = 15;
+
   let loadGuard = null;
   let nextTimer = null;
+  let nextWatch = null;
   let nextShown = false;
   let lastEmbed = null;
   let candidates = [];
   let candIdx = 0;
+  let resolvedAt = 0;
+  let busy = false;
 
   $('#back').onclick = () => history.length > 1 ? history.back() : location.href = 'index.html';
 
@@ -1017,10 +1024,7 @@ if (document.body.dataset.page === 'player') {
     $('#stage').innerHTML = '<p class="empty">Falha ao carregar informações do anime.</p>';
   }
 
-  (async () => {
-    await loadInfo();
-    await load();
-  })();
+  (async () => { await loadInfo(); await load(); })();
 
   function buildStrip() {
     const se = info?.seasons.find(s => s.season === season) || info?.seasons[0];
@@ -1031,14 +1035,7 @@ if (document.body.dataset.page === 'player') {
       a.textContent = n;
       a.href = '#';
       a.className = n === ep ? 'on' : '';
-      a.onclick = (ev) => {
-        ev.preventDefault();
-        ep = n;
-        tries = 0;
-        $('#ptitle').textContent = `${info?.title || slug} — EP ${ep}`;
-        buildStrip();
-        load();
-      };
+      a.onclick = (ev) => { ev.preventDefault(); ep = n; buildStrip(); load(); };
       $('#strip').appendChild(a);
     });
   }
@@ -1054,11 +1051,10 @@ if (document.body.dataset.page === 'player') {
 
   const titleOverlay = () => `<div class="player-title">${esc(epLabel())}</div>`;
 
+  /* FIX: bridge real do Android para tela cheia */
   function requestFs(el) {
+    try { if (window.Android && window.Android.fullscreen) { window.Android.fullscreen(); return; } } catch {}
     const target = el || $('#stage');
-    try {
-      if (window.Android && window.Android.fullscreen) { window.Android.fullscreen(); return; }
-    } catch {}
     try {
       if (target?.requestFullscreen) target.requestFullscreen().catch(() => {});
       else if (target?.webkitRequestFullscreen) target.webkitRequestFullscreen();
@@ -1072,11 +1068,46 @@ if (document.body.dataset.page === 'player') {
     $('#next-card')?.remove();
   }
 
+  function unmountStage() {
+    clearTimeout(loadGuard);
+    clearInterval(nextWatch);
+    nextWatch = null;
+    clearNextCard();
+    try { plyr?.destroy(); } catch {}
+    plyr = null;
+    candidates = [];
+    candIdx = 0;
+  }
+
   function nextEpisode() {
     const se = info?.seasons.find(s => s.season === season) || info?.seasons[0];
     const list = (se?.episodes || []).filter(e => e.audio === audio);
     const i = list.findIndex(e => (e.number || 0) === ep);
     return i >= 0 ? list[i + 1] : null;
+  }
+
+  /* FIX: gatilho por duração — funciona também no iframe, onde não há timeupdate */
+  function episodeDuration() {
+    const se = info?.seasons.find(s => s.season === season) || info?.seasons[0];
+    const e = (se?.episodes || []).find(x => Number(x.number) === Number(ep) && x.audio === audio);
+    const m = String(e?.duration || '').match(/(?:(\d{1,2}):)?(\d{1,2}):(\d{2})/);
+    if (!m) return 0;
+    return m[1] ? (+m[1]) * 3600 + (+m[2]) * 60 + (+m[3]) : (+m[2]) * 60 + (+m[3]);
+  }
+
+  function armNextByDuration() {
+    clearInterval(nextWatch);
+    const total = episodeDuration();
+    if (!total || autoNextPref === 'off') return;
+    const t0 = Date.now();
+    nextWatch = setInterval(() => {
+      if (nextShown) return clearInterval(nextWatch);
+      if ((Date.now() - t0) / 1000 >= total - NEXT_AT) {
+        clearInterval(nextWatch);
+        const n = nextEpisode();
+        if (n) { nextShown = true; showNextCard(n); }
+      }
+    }, 1000);
   }
 
   function showNextCard(nextEp) {
@@ -1103,50 +1134,50 @@ if (document.body.dataset.page === 'player') {
     }, 1000);
   }
 
-  function errorScreen(msg = 'Erro ao carregar episódio, tente novamente mais tarde.') {
-    clearTimeout(loadGuard);
-    clearNextCard();
+  /* FIX: retry só quando não existe fonte válida */
+  function errorScreen(msg = 'Erro ao carregar episódio, tente novamente mais tarde.', opts = {}) {
+    const retry = opts.retry !== false;
+    unmountStage();
     $('#stage').innerHTML = `<div class="player-error">
       <p>${esc(msg)}</p>
       <div class="row">
-        <button class="btn" id="err-retry" type="button">Tentar novamente</button>
-        <button class="btn dark" id="err-embed" type="button">Usar player alternativo</button>
+        ${retry ? '<button class="btn" id="err-retry" type="button">Tentar novamente</button>' : ''}
+        ${lastEmbed ? '<button class="btn dark" id="err-embed" type="button">Usar player alternativo</button>' : ''}
       </div>
     </div>`;
-    $('#err-retry').onclick = () => { tries = 0; candIdx = 0; load(); };
-    $('#err-embed').onclick = () => {
-      if (lastEmbed && mountFrame(lastEmbed)) return;
-      errorScreen('Nenhum player alternativo disponível para este episódio.');
-    };
+    if (retry) $('#err-retry').onclick = () => load();
+    const eb = $('#err-embed');
+    if (eb) eb.onclick = () => { if (!lastEmbed || !mountFrame(lastEmbed)) errorScreen('Nenhum player alternativo disponível.', { retry: false }); };
   }
 
-  /* FIX: embed Blogger entra direto no iframe, com título e permissões */
   function mountFrame(src) {
     const realSrc = unwrapOEmbed(src) || src;
     if (!realSrc || isSiteAnimePage(realSrc)) return false;
-    clearTimeout(loadGuard);
-    clearNextCard();
-    try { plyr?.pause(); } catch {}
-    $('#stage').innerHTML = `<iframe src="${esc(realSrc)}" allow="autoplay; fullscreen; encrypted-media; picture-in-picture" allowfullscreen referrerpolicy="no-referrer-when-downgrade" style="width:100%;height:100%;border:0"></iframe>${titleOverlay()}`;
+    unmountStage();
+    $('#stage').innerHTML = `<iframe id="player-frame" src="${esc(realSrc)}"
+      allow="autoplay; fullscreen; encrypted-media; picture-in-picture"
+      allowfullscreen referrerpolicy="no-referrer-when-downgrade"
+      style="width:100%;height:100%;border:0;display:block"></iframe>${titleOverlay()}`;
     $('#qbox').innerHTML = '';
-    const retry = document.createElement('button');
-    retry.className = 'tag';
-    retry.textContent = 'Tentar vídeo direto';
-    retry.onclick = () => { server = 'native'; store.set('srv', 'native'); tries = 0; candIdx = 0; load(); };
-    $('#qbox').appendChild(retry);
+    const alt = document.createElement('button');
+    alt.className = 'tag';
+    alt.textContent = 'Tentar vídeo direto';
+    alt.onclick = () => { server = 'native'; store.set('srv', 'native'); load(); };
+    $('#qbox').appendChild(alt);
     if (autoFsPref !== 'off') requestFs($('#stage'));
+    armNextByDuration();
     return true;
   }
 
   async function resolveStreamWithFallback() {
     sourcesList = await fetchSources();
-    const order = [source, ...sourcesList.map(s => s.id).filter(id => id !== source)];
+    const order = [source, ...sourcesList.map(s => s.id).filter(id => id !== source)].slice(0, MAX_SRC);
     for (const src of order) {
       try {
         const qs = new URLSearchParams({ source: src, audio, season: String(season), n: String(ep) }).toString();
-        const d = await json(`${API}/api/streams/${encodeURIComponent(slug)}/${ep}?${qs}`);
-        /* FIX: descarta bg.mp4 e assets; sem direto válido sobra o iframe */
-        const list = (d.streams || d.sources || []).filter(s => (s.url || s.proxyUrl) && !isSiteAnimePage(s.url || s.proxyUrl) && !isJunkMedia(s.url || s.proxyUrl));
+        const d = await jsonWithTimeout(`${API}/api/streams/${encodeURIComponent(slug)}/${ep}?${qs}`, 12000);
+        if (!d || d.ok === false) continue;
+        const list = (d.sources || d.streams || []).filter(s => (s.url || s.proxyUrl) && !isSiteAnimePage(s.url || s.proxyUrl) && !isJunkMedia(s.url || s.proxyUrl));
         const validIframes = (d.iframes || []).filter(u => u && !isSiteAnimePage(u));
         const blogger = validIframes.find(u => isBloggerEmbed(u));
         const embedUrl = unwrapOEmbed(blogger || (!isSiteAnimePage(d.iframe) ? d.iframe : null) || validIframes[0] || null);
@@ -1165,20 +1196,16 @@ if (document.body.dataset.page === 'player') {
     const out = [];
     for (const s of list) {
       const direct = unwrapOEmbed(s.url) || s.url;
-      if (direct && !isSiteAnimePage(direct) && !isJunkMedia(direct)) out.push({ ...s, src: direct, via: 'direto' });
+      if (direct && !isSiteAnimePage(direct) && !isJunkMedia(direct)) out.push({ ...s, src: direct });
     }
-    for (const s of list) {
-      if (!s.proxyUrl) continue;
-      out.push({ ...s, src: `${API}${s.proxyUrl}`, via: 'proxy' });
-    }
+    for (const s of list) if (s.proxyUrl) out.push({ ...s, src: `${API}${s.proxyUrl}` });
     return out;
   }
 
   async function load() {
-    clearTimeout(loadGuard);
-    clearNextCard();
-    candidates = [];
-    candIdx = 0;
+    if (busy) return;
+    busy = true;
+    unmountStage();
     $('#stage').innerHTML = '<p class="empty">Resolvendo episódio…</p>';
     $('#qbox').innerHTML = '';
     try {
@@ -1189,34 +1216,22 @@ if (document.body.dataset.page === 'player') {
       }
       const { list, embedUrl } = resolved;
       lastEmbed = embedUrl || null;
+      resolvedAt = Date.now();
 
-      /* FIX: só vai para iframe se pedido, se não houver direto, ou se o direto for lixo */
-      if (server === 'iframe' && embedUrl) {
-        if (mountFrame(embedUrl)) {
-          store.set('continue', [{ slug, source, title: info?.title || slug, cover: info?.cover, ep },
-            ...store.get('continue', []).filter(x => x.slug !== slug)].slice(0, 12));
-          return;
-        }
-      }
-
-      candidates = buildCandidates(list);
-
-      if (!candidates.length) {
-        if (embedUrl && mountFrame(embedUrl)) {
-          store.set('continue', [{ slug, source, title: info?.title || slug, cover: info?.cover, ep },
-            ...store.get('continue', []).filter(x => x.slug !== slug)].slice(0, 12));
-          return;
-        }
-        errorScreen('Episódio sem stream disponível. Tente outro áudio.');
-        return;
-      }
+      if (server === 'iframe' && embedUrl && mountFrame(embedUrl)) return;
 
       let ordered = list.slice().sort((a, b) => (Number(b.itag) || 0) - (Number(a.itag) || 0));
       if (qualityPref !== 'auto') {
-        const match = ordered.filter(s => String(s.quality || s.label || '').includes(qualityPref));
-        if (match.length) ordered = [...match, ...ordered.filter(s => !match.includes(s))];
+        const hit = ordered.filter(s => String(s.quality || s.label || '').includes(qualityPref));
+        if (hit.length) ordered = [...hit, ...ordered.filter(s => !hit.includes(s))];
       }
       candidates = buildCandidates(ordered);
+
+      if (!candidates.length) {
+        if (embedUrl && mountFrame(embedUrl)) return;
+        errorScreen('Episódio sem stream disponível. Tente outro áudio.');
+        return;
+      }
 
       $('#stage').innerHTML = `<div class="adv-player-wrapper" style="position:relative;width:100%;height:100%;background:#000">
         <video id="v" autoplay playsinline controls preload="metadata" style="width:100%;height:100%;display:block"></video>
@@ -1255,19 +1270,23 @@ if (document.body.dataset.page === 'player') {
         video.src = candidates[i].src;
         video.load();
         video.play().catch(() => {});
-        loadGuard = setTimeout(() => {
-          if (video.readyState < 2) tryCandidate(i + 1);
-        }, LOAD_TIMEOUT);
+        loadGuard = setTimeout(() => { if (video.readyState < 2) tryCandidate(i + 1); }, LOAD_TIMEOUT);
       };
 
       video.addEventListener('loadeddata', () => clearTimeout(loadGuard));
       video.addEventListener('playing', () => clearTimeout(loadGuard));
       video.addEventListener('error', () => { clearTimeout(loadGuard); tryCandidate(candIdx + 1); });
 
-      if (autoFsPref !== 'off') {
-        requestFs(video);
-        video.addEventListener('loadedmetadata', () => { if (video.paused) requestFs(video); }, { once: true });
-      }
+      video.addEventListener('loadedmetadata', () => {
+        const saved = Number(store.get('pos:' + slug + ':' + ep, 0));
+        if (saved > 5 && saved < (video.duration || Infinity) - 10) video.currentTime = saved;
+        if (video.paused && autoFsPref !== 'off') requestFs(video);
+      }, { once: true });
+
+      video.addEventListener('play', () => {
+        if (autoFsPref !== 'off') requestFs(video);
+        if (Date.now() - resolvedAt > STALE_MS) load();
+      });
 
       if (window.Plyr) {
         plyr = new Plyr(video, {
@@ -1280,41 +1299,35 @@ if (document.body.dataset.page === 'player') {
         video.controls = true;
       }
 
+      let lastSave = 0;
       video.addEventListener('timeupdate', () => {
-        saveProgress();
+        if (Date.now() - lastSave > 5000) { lastSave = Date.now(); saveProgress(); }
         const d = video.duration;
         if (!d || autoNextPref === 'off' || nextShown) return;
-        if (d - video.currentTime <= 15) {
+        if (d - video.currentTime <= NEXT_AT) {
           const n = nextEpisode();
           if (n) { nextShown = true; showNextCard(n); }
         }
       });
-      if (autoNextPref !== 'off') {
-        video.addEventListener('ended', () => { clearNextCard(); next(); });
-      }
+      if (autoNextPref !== 'off') video.addEventListener('ended', () => { clearNextCard(); next(); });
 
       $('#btn-10s')?.addEventListener('click', () => { video.currentTime = Math.max(0, video.currentTime - 10); });
       $('#btn+10s')?.addEventListener('click', () => { video.currentTime = Math.min(video.duration || 0, video.currentTime + 10); });
       const ppBtn = $('#btn-playpause');
       if (ppBtn) {
-        ppBtn.onclick = () => {
-          if (video.paused) { video.play(); ppBtn.textContent = '⏸'; }
-          else { video.pause(); ppBtn.textContent = '▶'; }
-        };
+        ppBtn.onclick = () => { if (video.paused) video.play(); else video.pause(); };
         video.onplay = () => ppBtn.textContent = '⏸';
         video.onpause = () => ppBtn.textContent = '▶';
       }
-
       $('#range-vol')?.addEventListener('input', (e) => { video.volume = e.target.value; });
       $('#range-bright')?.addEventListener('input', (e) => { video.style.filter = `brightness(${e.target.value})`; });
 
       ordered.slice().reverse().forEach(s => {
         const b = document.createElement('button');
         b.className = 'tag';
-        b.textContent = (s.quality || s.label || 'HD') + (isJunkMedia(s.url) ? ' · bg' : '');
+        b.textContent = s.quality || s.label || 'HD';
         b.onclick = () => {
-          const direct = unwrapOEmbed(s.url) || s.url;
-          const idx = candidates.findIndex(c => c.src === direct);
+          const idx = candidates.findIndex(c => c.src === (unwrapOEmbed(s.url) || s.url));
           if (idx >= 0) tryCandidate(idx);
           $$('#qbox .tag').forEach(x => x.classList.toggle('on', x === b));
         };
@@ -1333,11 +1346,14 @@ if (document.body.dataset.page === 'player') {
       $('#qbox').appendChild(dl);
 
       tryCandidate(0);
+      armNextByDuration();
 
       store.set('continue', [{ slug, source, title: info?.title || slug, cover: info?.cover, ep },
         ...store.get('continue', []).filter(x => x.slug !== slug)].slice(0, 12));
     } catch {
       errorScreen();
+    } finally {
+      busy = false;
     }
   }
 
@@ -1353,7 +1369,6 @@ if (document.body.dataset.page === 'player') {
     const i = list.findIndex(e => (e.number || 0) === ep);
     if (i >= 0 && list[i + 1]) {
       ep = list[i + 1].number || ep + 1;
-      tries = 0;
       $('#ptitle').textContent = `${info?.title || slug} — EP ${ep}`;
       buildStrip();
       load();
@@ -1367,7 +1382,6 @@ if (document.body.dataset.page === 'player') {
     const i = list.findIndex(e => (e.number || 0) === ep);
     if (i > 0) {
       ep = list[i - 1].number || ep - 1;
-      tries = 0;
       $('#ptitle').textContent = `${info?.title || slug} — EP ${ep}`;
       buildStrip();
       load();
@@ -1390,8 +1404,7 @@ if (document.body.dataset.page === 'player') {
     $$('#srv-options [data-source-idx]').forEach(b => {
       const idx = +b.dataset.sourceIdx;
       const sObj = sourcesList[idx] || DEFAULT_SOURCES[idx];
-      const isCurrent = sObj && sObj.id === source;
-      b.classList.toggle('on', isCurrent);
+      b.classList.toggle('on', Boolean(sObj && sObj.id === source));
       b.onclick = () => {
         if (!sObj) return;
         source = sObj.id;
@@ -1399,15 +1412,15 @@ if (document.body.dataset.page === 'player') {
         $('#overlay').classList.remove('on');
         updateServerButtons();
         toast(`Servidor ${idx + 1} selecionado`);
-        plyr?.destroy();
         load();
       };
     });
   }
 
   $('#dim').onclick = () => $('#overlay').classList.remove('on');
-  $('#opts').onclick = () => {
-    updateServerButtons();
-    $('#overlay').classList.add('on');
-  };
+  $('#opts').onclick = () => { updateServerButtons(); $('#overlay').classList.add('on'); };
+
+  document.addEventListener('visibilitychange', () => {
+    if (document.visibilityState === 'visible' && resolvedAt && Date.now() - resolvedAt > STALE_MS && $('#v')) load();
+  });
 }
