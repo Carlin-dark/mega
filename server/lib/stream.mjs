@@ -99,33 +99,52 @@ function unwrapOEmbedText(text = '', base = '') {
 }
 
 export function parseStreamingData(html, referer) {
-  const idx = html.indexOf('"streamingData"');
-  if (idx < 0) return [];
-  const brace = html.indexOf('{', idx);
-  const raw = extractBalanced(html, brace);
-  if (!raw) return [];
-  let data;
-  try { data = JSON.parse(raw); } catch { return []; }
-  const all = [...(data.formats || []), ...(data.adaptiveFormats || [])];
+  const src = String(html || '')
+    .replace(/\\u0026/g, '&')
+    .replace(/\\\//g, '/')
+    .replace(/\\"/g, '"')
+    .replace(/&amp;/g, '&');
+
   const out = [];
-  for (const f of all) {
-    const norm = normalizeMediaUrl(f.url, referer);
-    if (!norm) continue;
-    const mime = (f.mimeType || 'video/mp4').split(';')[0];
-    if (!mime.startsWith('video/')) continue;
-    const itag = Number(f.itag);
+  const pushFormat = (f) => {
+    const norm = normalizeMediaUrl(f.url || f.src, referer);
+    if (!norm) return;
+    const mime = String(f.mimeType || f.mime || 'video/mp4').split(';')[0];
+    if (!mime.startsWith('video/')) return;
+    const itag = Number(f.itag) || Number((norm.match(/[?&]itag=(\d+)/) || [])[1]) || 0;
     const known = ITAG[itag];
     out.push({
       url: norm,
-      quality: known?.quality || (f.height ? `${f.height}p` : String(itag || 'auto')),
+      quality: known?.quality || (f.height ? `${f.height}p` : 'auto'),
       label: known?.label || (f.height ? `${f.height}p` : `itag ${itag}`),
       mime,
       itag,
-      progressive: Boolean(f.url) && !(data.adaptiveFormats || []).some((a) => a.itag === f.itag),
+      progressive: Boolean(f.url) && !(f.adaptiveFormats || []).some((a) => a.itag === f.itag),
       referer,
       expiresAt: expiresAtFrom(norm),
     });
+  };
+
+  for (const marker of ['"streamingData"', 'streamingData:', '"adaptiveFormats"', 'VIDEO_CONFIG', '"formats"']) {
+    const idx = src.indexOf(marker);
+    if (idx < 0) continue;
+    const brace = src.indexOf('{', idx);
+    const raw = extractBalanced(src, brace);
+    if (!raw) continue;
+    try {
+      const data = JSON.parse(raw);
+      const all = [...(data.formats || []), ...(data.adaptiveFormats || []), ...(data.streamingData?.formats || []), ...(data.streamingData?.adaptiveFormats || [])];
+      for (const f of all) pushFormat(f);
+      if (out.length) break;
+    } catch {}
   }
+
+  if (!out.length) {
+    for (const m of src.matchAll(/https?:\/\/[^"'\s<>\\]+videoplayback[^"'\s<>\\]*/g)) {
+      pushFormat({ url: m[0] });
+    }
+  }
+
   return out;
 }
 
@@ -160,11 +179,28 @@ export function extractDirectVideosFromText(text = '', base = '') {
   return found;
 }
 
+async function fetchBloggerPlayer(url, referer) {
+  const variants = [url, `${url}${url.includes('?') ? '&' : '?'}hl=pt-BR`];
+  const refs = [referer, 'https://www.blogger.com/', 'https://www.blogger.com', undefined];
+  const clean = (u) => u && !isBlockedEmbed(u);
+
+  for (const v of variants) {
+    for (const r of refs) {
+      const res = await fetchText(v, { referer: r, timeout: 15_000, retries: 0 });
+      if (!res.ok || !res.body) continue;
+      const parsed = parseStreamingData(res.body, 'https://www.blogger.com/');
+      if (parsed.length) return parsed;
+      const raw = extractDirectVideosFromText(res.body, 'https://www.blogger.com/').filter((s) => clean(s.url));
+      if (raw.length) return raw;
+    }
+  }
+  return [];
+}
+
 export async function resolvePlayer(rawUrl, referer, depth = 0) {
   const url = normalizeMediaUrl(rawUrl, referer);
   if (!url || isBlockedEmbed(url) || depth > 2) return [];
 
-  // Se for endpoint oEmbed (/oembed ou ?url=...oembed), desembrulha o JSON e segue o embed real
   if (/\/oembed|oembed/i.test(url)) {
     const res = await fetchText(url, { referer: referer || url, timeout: 15_000 });
     if (!res.ok || !res.body) return [];
@@ -183,8 +219,7 @@ export async function resolvePlayer(rawUrl, referer, depth = 0) {
   if (isAnimePageUrl(url)) return [];
 
   if (/blogger\.com\/video\.g|video\.g\?token=/.test(url)) {
-    const res = await fetchText(url, { referer: 'https://www.blogger.com/', timeout: 15_000 });
-    return res.ok ? parseStreamingData(res.body, 'https://www.blogger.com/') : [];
+    return fetchBloggerPlayer(url, referer);
   }
 
   if (/\.m3u8(\?|$)/i.test(url)) {

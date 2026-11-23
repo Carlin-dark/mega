@@ -601,7 +601,7 @@ if (document.body.dataset.page === 'home') {
 
   /* PROFILE PREFERENCES SAVING */
   function renderProfile() {
-    $('#p-stats').textContent = `${favs().length} salvos · ${store.get('dls', []).length} downloads`;
+    if ($('#p-stats')) $('#p-stats').textContent = `${favs().length} salvos · ${store.get('dls', []).length} downloads`;
 
     const prefAudio = store.get('audio', 'leg');
     $$('[data-pref-audio]').forEach(b => b.classList.toggle('on', b.dataset.prefAudio === prefAudio));
@@ -614,6 +614,9 @@ if (document.body.dataset.page === 'home') {
 
     const prefAutoNext = store.get('auto_next', 'on');
     $$('[data-pref-autonext]').forEach(b => b.classList.toggle('on', b.dataset.prefAutonext === prefAutoNext));
+
+    const prefAutoFs = store.get('auto_fs', 'on');
+    $$('[data-pref-autofs]').forEach(b => b.classList.toggle('on', b.dataset.prefAutofs === prefAutoFs));
   }
 
   $$('[data-pref-audio]').forEach(b => b.onclick = () => {
@@ -642,13 +645,21 @@ if (document.body.dataset.page === 'home') {
     toast('Auto Próximo Episódio atualizado');
   });
 
-  $('#wipe').onclick = () => {
-    if (confirm('Deseja realmente apagar todo o histórico, salvos e preferências localmente?')) {
-      localStorage.clear();
-      toast('Dados limpos');
-      renderProfile();
-    }
-  };
+  $$('[data-pref-autofs]').forEach(b => b.onclick = () => {
+    store.set('auto_fs', b.dataset.prefAutofs);
+    renderProfile();
+    toast('Tela Cheia Automática atualizada');
+  });
+
+  if ($('#wipe')) {
+    $('#wipe').onclick = () => {
+      if (confirm('Deseja realmente apagar todo o histórico, salvos e preferências localmente?')) {
+        localStorage.clear();
+        toast('Dados limpos');
+        renderProfile();
+      }
+    };
+  }
 }
 
 /* ================= DETALHE ================= */
@@ -922,7 +933,8 @@ if (document.body.dataset.page === 'detail') {
 /* ================= PLAYER ================= */
 if (document.body.dataset.page === 'player') {
   const p = new URLSearchParams(location.search);
-  let source = p.get('source') || store.get('source', 'animesonline');
+  let srvIdxPref = store.get('srv_idx', null);
+  let source = p.get('source') || (srvIdxPref !== null && DEFAULT_SOURCES[+srvIdxPref] ? DEFAULT_SOURCES[+srvIdxPref].id : store.get('source', 'animesonline'));
   let slug = p.get('slug');
   const season = +(p.get('season') || 1);
   let ep = +(p.get('ep') || 1);
@@ -930,9 +942,50 @@ if (document.body.dataset.page === 'player') {
   let server = store.get('srv', 'native');
   let qualityPref = store.get('quality_pref', 'auto');
   let autoNextPref = store.get('auto_next', 'on');
+  let autoFsPref = store.get('auto_fs', 'on');
   let info = null, plyr = null, tries = 0, sourcesList = DEFAULT_SOURCES;
 
+  let nextCountdownInterval = null;
+  let nextCardDismissed = false;
+  let activeLoadId = 0;
+
   $('#back').onclick = () => history.length > 1 ? history.back() : location.href = 'index.html';
+
+  function requestFullscreenSafe() {
+    autoFsPref = store.get('auto_fs', 'on');
+    if (autoFsPref === 'off') return;
+    try {
+      const el = $('#stage') || document.documentElement;
+      if (el.requestFullscreen) {
+        el.requestFullscreen().catch(() => {});
+      } else if (el.webkitRequestFullscreen) {
+        el.webkitRequestFullscreen();
+      } else if (el.msRequestFullscreen) {
+        el.msRequestFullscreen();
+      }
+    } catch {}
+  }
+
+  function getHeaderTitleLabel() {
+    const se = info?.seasons.find(s => s.season === season) || info?.seasons[0];
+    const epObj = se?.episodes.find(e => (e.number || e.id) === ep);
+
+    let typePrefix = `T${season}`;
+    const animeType = (info?.type || '').toLowerCase();
+    if (animeType.includes('ova')) typePrefix = 'OVA';
+    else if (animeType.includes('especial') || animeType.includes('special')) typePrefix = 'Especial';
+    else if (animeType.includes('filme') || animeType.includes('movie')) typePrefix = 'Filme';
+
+    const epTitle = epObj?.title ? epObj.title : `Episódio ${ep}`;
+    return `${typePrefix} • ${epTitle}`;
+  }
+
+  function updateTitleDisplays() {
+    const titleLabel = getHeaderTitleLabel();
+    const fullText = info?.title ? `${info.title} — ${titleLabel}` : titleLabel;
+    if ($('#ptitle')) $('#ptitle').textContent = fullText;
+    document.title = fullText;
+  }
 
   async function loadInfo() {
     sourcesList = await fetchSources();
@@ -944,47 +997,56 @@ if (document.body.dataset.page === 'player') {
           source = src;
           store.set('source', source);
           info = normAnime({ ...raw, source });
-          $('#ptitle').textContent = `${info.title} — EP ${ep}`;
-          document.title = $('#ptitle').textContent;
+          updateTitleDisplays();
           buildStrip();
           updateServerButtons();
           return;
         }
       } catch {}
     }
-    $('#stage').innerHTML = '<p class="empty">Falha ao carregar informações do anime.</p>';
   }
 
   (async () => {
+    // Solicitar tela cheia automaticamente ao abrir o episódio
+    requestFullscreenSafe();
     await loadInfo();
     await load();
   })();
 
   function buildStrip() {
     const se = info?.seasons.find(s => s.season === season) || info?.seasons[0];
-    $('#strip').innerHTML = '';
-    (se?.episodes || []).filter(e => e.audio === audio).forEach((e, idx) => {
-      const n = e.number || idx + 1;
-      const a = document.createElement('a');
-      a.textContent = n;
-      a.href = '#';
-      a.className = n === ep ? 'on' : '';
-      a.onclick = (ev) => {
-        ev.preventDefault();
-        ep = n;
-        tries = 0;
-        $('#ptitle').textContent = `${info?.title || slug} — EP ${ep}`;
-        buildStrip();
-        load();
-      };
-      $('#strip').appendChild(a);
-    });
+    if ($('#strip')) {
+      $('#strip').innerHTML = '';
+      (se?.episodes || []).filter(e => e.audio === audio).forEach((e, idx) => {
+        const n = e.number || idx + 1;
+        const a = document.createElement('a');
+        a.textContent = n;
+        a.href = '#';
+        a.className = n === ep ? 'on' : '';
+        a.onclick = (ev) => {
+          ev.preventDefault();
+          ep = n;
+          tries = 0;
+          nextCardDismissed = false;
+          clearInterval(nextCountdownInterval);
+          updateTitleDisplays();
+          buildStrip();
+          load();
+        };
+        $('#strip').appendChild(a);
+      });
+    }
   }
 
   function mountFrame(src) {
     const realSrc = unwrapOEmbed(src) || src;
     if (!realSrc || isSiteAnimePage(realSrc)) return false;
-    $('#stage').innerHTML = `<iframe src="${esc(realSrc)}" allow="autoplay;fullscreen;encrypted-media;picture-in-picture" allowfullscreen referrerpolicy="no-referrer-when-downgrade" style="width:100%;height:100%;border:0"></iframe>`;
+    const titleLabel = getHeaderTitleLabel();
+    $('#stage').innerHTML = `
+      <div class="player-top-overlay">
+        <span class="player-top-title">${esc(titleLabel)}</span>
+      </div>
+      <iframe src="${esc(realSrc)}" allow="autoplay;fullscreen;encrypted-media;picture-in-picture" allowfullscreen referrerpolicy="no-referrer-when-downgrade" style="width:100%;height:100%;border:0"></iframe>`;
     $('#qbox').innerHTML = '';
     const retry = document.createElement('button');
     retry.className = 'tag';
@@ -1016,14 +1078,32 @@ if (document.body.dataset.page === 'player') {
   }
 
   async function load() {
-    $('#stage').innerHTML = '<p class="empty">Resolvendo episódio…</p>';
+    const thisLoadId = ++activeLoadId;
+    nextCardDismissed = false;
+    clearInterval(nextCountdownInterval);
+    updateTitleDisplays();
+
+    // Estado de carregamento APENAS na área do vídeo (mantendo controles visíveis)
+    $('#stage').innerHTML = `
+      <div class="player-loading-box">
+        <div class="spinner"></div>
+        <p style="color:#aaa;font-size:13px;font-weight:600">Carregando episódio...</p>
+      </div>`;
     $('#qbox').innerHTML = '';
+
+    // Timeout de resolução (12 segundos)
     try {
-      const resolved = await resolveStreamWithFallback();
+      const resolvePromise = resolveStreamWithFallback();
+      const timeoutPromise = new Promise((_, reject) => setTimeout(() => reject(new Error('timeout')), 12000));
+
+      const resolved = await Promise.race([resolvePromise, timeoutPromise]);
+      if (thisLoadId !== activeLoadId) return;
+
       if (!resolved) {
-        $('#stage').innerHTML = '<p class="empty">Episódio sem stream disponível em nenhum servidor. Tente outro áudio.</p>';
+        showPlayerError('Erro ao carregar episódio, tente novamente mais tarde.');
         return;
       }
+
       const { d, list, embedUrl } = resolved;
 
       if (server === 'iframe' && embedUrl) {
@@ -1040,11 +1120,12 @@ if (document.body.dataset.page === 'player') {
             ...store.get('continue', []).filter(x => x.slug !== slug)].slice(0, 12));
           return;
         }
-        $('#stage').innerHTML = '<p class="empty">Episódio sem stream disponível. Tente outro áudio.</p>';
+        showPlayerError('Erro ao carregar episódio, tente novamente mais tarde.');
         return;
       }
 
       let best = list[list.length - 1];
+      qualityPref = store.get('quality_pref', 'auto');
       if (qualityPref !== 'auto') {
         const match = list.find(s => String(s.quality || s.label || '').includes(qualityPref));
         if (match) best = match;
@@ -1053,10 +1134,15 @@ if (document.body.dataset.page === 'player') {
       const rawBestSrc = best.proxyUrl ? `${API}${best.proxyUrl}` : best.url;
       const bestSrc = unwrapOEmbed(rawBestSrc) || rawBestSrc;
 
+      const titleLabel = getHeaderTitleLabel();
+
       $('#stage').innerHTML = `<div class="adv-player-wrapper" style="position:relative;width:100%;height:100%;background:#000">
         <video id="v" playsinline crossorigin style="width:100%;height:100%;display:block"></video>
+        <div class="player-top-overlay">
+          <span class="player-top-title">${esc(titleLabel)}</span>
+        </div>
         <div class="adv-overlay" style="position:absolute;inset:0;pointer-events:none;display:flex;flex-direction:column;justify-content:space-between;padding:12px">
-          <div style="display:flex;justify-content:space-between;align-items:center;pointer-events:auto">
+          <div style="display:flex;justify-content:flex-end;align-items:center;pointer-events:auto">
             <span class="ep-badge" style="background:var(--red);color:#fff;padding:3px 8px;border-radius:4px;font-size:11px;font-weight:900">EP ${ep}</span>
           </div>
           <div class="center-btns" style="display:flex;justify-content:center;align-items:center;gap:24px;pointer-events:auto">
@@ -1079,19 +1165,17 @@ if (document.body.dataset.page === 'player') {
       video.src = bestSrc;
       if (info?.cover) video.poster = info.cover.startsWith('http') ? info.cover : img(info.cover);
 
-      const triggerFullscreen = () => {
-        try {
-          if (video.requestFullscreen) video.requestFullscreen().catch(() => {});
-          else if (video.webkitRequestFullscreen) video.webkitRequestFullscreen();
-        } catch {}
-      };
-      video.addEventListener('play', triggerFullscreen, { once: true });
+      // Trigger fullscreen request safely when video plays
+      video.addEventListener('play', () => requestFullscreenSafe(), { once: true });
 
       video.addEventListener('error', () => {
+        if (thisLoadId !== activeLoadId) return;
         if (tries++ < 2) { toast('Link expirou, resolvendo de novo'); load(); return; }
         if (embedUrl && mountFrame(embedUrl)) toast('Trocando para player embed');
-        else $('#stage').innerHTML = '<p class="empty">Não foi possível reproduzir este stream.</p>';
+        else showPlayerError('Erro ao carregar episódio, tente novamente mais tarde.');
       });
+
+      autoNextPref = store.get('auto_next', 'on');
 
       if (window.Plyr) {
         plyr = new Plyr(video, {
@@ -1101,11 +1185,22 @@ if (document.body.dataset.page === 'player') {
           speed: { selected: 1, options: [0.5, 1, 1.25, 1.5, 2] },
           storage: { enabled: true, key: 'ma-plyr' }
         });
-        video.addEventListener('timeupdate', saveProgress);
-        if (autoNextPref !== 'off') video.addEventListener('ended', next);
+        video.addEventListener('timeupdate', () => {
+          saveProgress();
+          checkNextEpCard(video);
+        });
+        video.addEventListener('ended', () => {
+          if (autoNextPref !== 'off' && !nextCardDismissed) next();
+        });
       } else {
         video.controls = true;
-        if (autoNextPref !== 'off') video.addEventListener('ended', next);
+        video.addEventListener('timeupdate', () => {
+          saveProgress();
+          checkNextEpCard(video);
+        });
+        video.addEventListener('ended', () => {
+          if (autoNextPref !== 'off' && !nextCardDismissed) next();
+        });
       }
 
       $('#btn-10s')?.addEventListener('click', () => { video.currentTime = Math.max(0, video.currentTime - 10); });
@@ -1154,8 +1249,114 @@ if (document.body.dataset.page === 'player') {
       store.set('continue', [{ slug, source, title: info?.title || slug, cover: info?.cover, ep },
         ...store.get('continue', []).filter(x => x.slug !== slug)].slice(0, 12));
     } catch {
-      $('#stage').innerHTML = '<p class="empty">Episódio indisponível.</p>';
+      if (thisLoadId === activeLoadId) {
+        showPlayerError('Erro ao carregar episódio, tente novamente mais tarde.');
+      }
     }
+  }
+
+  function showPlayerError(msg) {
+    $('#stage').innerHTML = `
+      <div class="player-error-box">
+        <svg viewBox="0 0 24 24" fill="none" stroke="var(--red)" stroke-width="2" style="width:42px;height:42px"><circle cx="12" cy="12" r="10"/><path d="M12 8v4M12 16h.01"/></svg>
+        <p style="color:#eee;font-size:14px;font-weight:700;max-width:280px">${esc(msg)}</p>
+        <button class="btn" id="retry-load-btn" style="padding:9px 20px;font-size:13px">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" style="width:14px;height:14px"><path d="M21.5 2v6h-6M21.34 15.57a10 10 0 1 1-.57-8.38l5.67-5.67"/></svg>
+          Tentar novamente
+        </button>
+      </div>`;
+    $('#retry-load-btn').onclick = () => { tries = 0; load(); };
+
+    // Disponibilizar botão de tentar novamente também no qbox
+    $('#qbox').innerHTML = '';
+    const qRetry = document.createElement('button');
+    qRetry.className = 'tag';
+    qRetry.textContent = 'Tentar novamente';
+    qRetry.onclick = () => { tries = 0; load(); };
+    $('#qbox').appendChild(qRetry);
+  }
+
+  function checkNextEpCard(video) {
+    if (!video || !video.duration || nextCardDismissed) return;
+    const rem = video.duration - video.currentTime;
+    const se = info?.seasons.find(s => s.season === season) || info?.seasons[0];
+    const epList = (se?.episodes || []).filter(e => e.audio === audio);
+    const currIdx = epList.findIndex(e => (e.number || e.id) === ep);
+    const nextEpObj = currIdx >= 0 && epList[currIdx + 1] ? epList[currIdx + 1] : null;
+
+    if (!nextEpObj) return;
+
+    if (rem <= 15 && !$('#next-ep-card')) {
+      showNextEpCard(nextEpObj);
+    }
+  }
+
+  function showNextEpCard(nextEpObj) {
+    if ($('#next-ep-card')) return;
+
+    const nextEpNum = nextEpObj.number || ep + 1;
+    const nextEpTitle = nextEpObj.title ? nextEpObj.title : `Episódio ${nextEpNum}`;
+
+    let typePrefix = `T${season}`;
+    const animeType = (info?.type || '').toLowerCase();
+    if (animeType.includes('ova')) typePrefix = 'OVA';
+    else if (animeType.includes('especial') || animeType.includes('special')) typePrefix = 'Especial';
+    else if (animeType.includes('filme') || animeType.includes('movie')) typePrefix = 'Filme';
+
+    const nextThumb = info?.cover ? (info.cover.startsWith('http') ? info.cover : img(info.cover)) : '';
+
+    const cardEl = document.createElement('div');
+    cardEl.id = 'next-ep-card';
+    cardEl.className = 'next-ep-card';
+    cardEl.innerHTML = `
+      <div class="next-ep-thumb">
+        ${nextThumb ? `<img src="${nextThumb}" alt="">` : ''}
+        <span class="next-ep-badge">${typePrefix}</span>
+      </div>
+      <div class="next-ep-info">
+        <small>Próximo Episódio</small>
+        <b>${esc(nextEpTitle)}</b>
+        <div class="next-ep-timer" id="next-ep-timer">Próximo em 10s...</div>
+      </div>
+      <div class="next-ep-actions">
+        <button class="btn" id="btn-next-now" style="padding:6px 12px;font-size:12px">▶ Ir agora</button>
+        <button class="icon-btn" id="btn-next-cancel" title="Cancelar" style="width:28px;height:28px;background:rgba(255,255,255,.15);border:0;color:#fff">✕</button>
+      </div>`;
+
+    const wrapper = $('.adv-player-wrapper') || $('#stage');
+    if (wrapper) wrapper.appendChild(cardEl);
+
+    let seconds = 10;
+    autoNextPref = store.get('auto_next', 'on');
+
+    if (autoNextPref !== 'off') {
+      clearInterval(nextCountdownInterval);
+      nextCountdownInterval = setInterval(() => {
+        seconds--;
+        const timerEl = $('#next-ep-timer');
+        if (timerEl) timerEl.textContent = `Próximo em ${seconds}s...`;
+        if (seconds <= 0) {
+          clearInterval(nextCountdownInterval);
+          next();
+        }
+      }, 1000);
+    } else {
+      const timerEl = $('#next-ep-timer');
+      if (timerEl) timerEl.textContent = 'Clique para assistir';
+    }
+
+    $('#btn-next-now')?.addEventListener('click', (e) => {
+      e.stopPropagation();
+      clearInterval(nextCountdownInterval);
+      next();
+    });
+
+    $('#btn-next-cancel')?.addEventListener('click', (e) => {
+      e.stopPropagation();
+      clearInterval(nextCountdownInterval);
+      nextCardDismissed = true;
+      cardEl.remove();
+    });
   }
 
   function saveProgress() {
@@ -1165,13 +1366,15 @@ if (document.body.dataset.page === 'player') {
   }
 
   function next() {
+    clearInterval(nextCountdownInterval);
+    nextCardDismissed = false;
     const se = info?.seasons.find(s => s.season === season) || info?.seasons[0];
     const list = (se?.episodes || []).filter(e => e.audio === audio);
     const i = list.findIndex(e => (e.number || 0) === ep);
     if (i >= 0 && list[i + 1]) {
       ep = list[i + 1].number || ep + 1;
       tries = 0;
-      $('#ptitle').textContent = `${info?.title || slug} — EP ${ep}`;
+      updateTitleDisplays();
       buildStrip();
       load();
     }
@@ -1179,13 +1382,15 @@ if (document.body.dataset.page === 'player') {
 
   $('#next').onclick = next;
   $('#prev').onclick = () => {
+    clearInterval(nextCountdownInterval);
+    nextCardDismissed = false;
     const se = info?.seasons.find(s => s.season === season) || info?.seasons[0];
     const list = (se?.episodes || []).filter(e => e.audio === audio);
     const i = list.findIndex(e => (e.number || 0) === ep);
     if (i > 0) {
       ep = list[i - 1].number || ep - 1;
       tries = 0;
-      $('#ptitle').textContent = `${info?.title || slug} — EP ${ep}`;
+      updateTitleDisplays();
       buildStrip();
       load();
     }
@@ -1213,6 +1418,7 @@ if (document.body.dataset.page === 'player') {
         if (!sObj) return;
         source = sObj.id;
         store.set('source', source);
+        store.set('srv_idx', idx);
         $('#overlay').classList.remove('on');
         updateServerButtons();
         toast(`Servidor ${idx + 1} selecionado`);

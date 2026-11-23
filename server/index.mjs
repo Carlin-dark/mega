@@ -355,6 +355,28 @@ app.get('/api/hls', async (req, res) => {
   }
 });
 
+app.get('/api/debug', async (req, res) => {
+  const u = String(req.query.u || '');
+  const ref = req.query.ref ? String(req.query.ref) : undefined;
+  if (!u) return res.status(400).json({ error: 'informe ?u=' });
+  try {
+    const r = await fetchText(u, { referer: ref, timeout: 15000, retries: 0 });
+    res.json({
+      url: u,
+      ref: ref || null,
+      status: r.status,
+      ok: r.ok,
+      bytes: r.body.length,
+      content_type: r.headers.get('content-type') || null,
+      server: r.headers.get('server') || null,
+      cf_mitigated: r.headers.get('cf-mitigated') || null,
+      head: r.body.slice(0, 700),
+    });
+  } catch (e) {
+    res.status(500).json({ url: u, ref: ref || null, status: 0, error: String(e?.message || e) });
+  }
+});
+
 app.get('/api/health', (_req, res) => res.json({ ok: true, uptime: process.uptime() }));
 
 app.use(express.static(path.join(__dirname, '..', 'web'), { extensions: ['html'] }));

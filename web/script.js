@@ -601,7 +601,7 @@ if (document.body.dataset.page === 'home') {
 
   /* PROFILE PREFERENCES SAVING */
   function renderProfile() {
-    $('#p-stats').textContent = `${favs().length} salvos · ${store.get('dls', []).length} downloads`;
+    if ($('#p-stats')) $('#p-stats').textContent = `${favs().length} salvos · ${store.get('dls', []).length} downloads`;
 
     const prefAudio = store.get('audio', 'leg');
     $$('[data-pref-audio]').forEach(b => b.classList.toggle('on', b.dataset.prefAudio === prefAudio));
@@ -614,6 +614,9 @@ if (document.body.dataset.page === 'home') {
 
     const prefAutoNext = store.get('auto_next', 'on');
     $$('[data-pref-autonext]').forEach(b => b.classList.toggle('on', b.dataset.prefAutonext === prefAutoNext));
+
+    const prefAutoFs = store.get('auto_fs', 'on');
+    $$('[data-pref-autofs]').forEach(b => b.classList.toggle('on', b.dataset.prefAutofs === prefAutoFs));
   }
 
   $$('[data-pref-audio]').forEach(b => b.onclick = () => {
@@ -642,13 +645,21 @@ if (document.body.dataset.page === 'home') {
     toast('Auto Próximo Episódio atualizado');
   });
 
-  $('#wipe').onclick = () => {
-    if (confirm('Deseja realmente apagar todo o histórico, salvos e preferências localmente?')) {
-      localStorage.clear();
-      toast('Dados limpos');
-      renderProfile();
-    }
-  };
+  $$('[data-pref-autofs]').forEach(b => b.onclick = () => {
+    store.set('auto_fs', b.dataset.prefAutofs);
+    renderProfile();
+    toast('Tela Cheia Automática atualizada');
+  });
+
+  if ($('#wipe')) {
+    $('#wipe').onclick = () => {
+      if (confirm('Deseja realmente apagar todo o histórico, salvos e preferências localmente?')) {
+        localStorage.clear();
+        toast('Dados limpos');
+        renderProfile();
+      }
+    };
+  }
 }
 
 /* ================= DETALHE ================= */
