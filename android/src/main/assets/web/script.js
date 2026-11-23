@@ -295,7 +295,7 @@ const asList = (d) => {
   return [];
 };
 
-const cover = (a) => a.cover || a.poster || a.banner || null;
+const cover = (a) => a.cover || a.poster || a.banner || a.image || a.thumb || a.thumbnail || null;
 
 const daySeed = () => Math.floor(Date.now() / 86400000);
 const rotateList = (arr = [], by = 0) => {
@@ -443,9 +443,9 @@ function card(a, ep, srcOverride) {
   const c = cover(a);
   const titleEsc = esc(a.title || '');
   const subtitle = esc([a.type, a.year].filter(Boolean).join(' • '));
-  const coverUrl = c ? (c.startsWith('http') ? esc(c) : img(c)) : PLACEHOLDER;
+  const coverUrl = c ? img(c) : PLACEHOLDER;
   el.innerHTML = `${ep ? `<span class="ep">EP ${esc(ep)}</span>` : ''}
-    <img loading="${coverSeq++ < EAGER_LIMIT ? 'eager' : 'lazy'}" src="${coverUrl}" alt="${titleEsc}" data-direct="${c && c.startsWith('http') ? esc(c) : ''}" data-proxy="${esc(c ? img(c) : '')}" data-title="${titleEsc}" decoding="async" referrerpolicy="no-referrer" onerror="__coverFail(this)">
+    <img loading="${coverSeq++ < EAGER_LIMIT ? 'eager' : 'lazy'}" src="${coverUrl}" alt="${titleEsc}" data-proxy="${esc(c ? img(c) : '')}" data-title="${titleEsc}" decoding="async" referrerpolicy="no-referrer" onerror="__coverFail(this)">
     <div class="pl"><span>${ICONS.play}</span></div>
     <div class="cap"><b>${titleEsc}</b><small>${subtitle}</small></div>`;
   if (!c) {

@@ -117,9 +117,10 @@ async function load() {
     const href = a.slug
       ? `detail.html?source=animesonline&slug=${encodeURIComponent(a.slug)}`
       : `search.html?q=${encodeURIComponent(a.title)}`;
-    const src = a.poster ? apiUrl(`/img?u=${encodeURIComponent(a.poster)}`) : '';
+    const src = a.poster || a.cover || a.image || a.thumb || a.thumbnail;
+    const coverUrl = src ? apiUrl(`/img?u=${encodeURIComponent(src)}`) : PLACEHOLDER;
     return `<a class="card" href="${href}">
-      <div class="ph">${src ? `<img loading="lazy" src="${src}" alt="${a.title.replace(/"/g, '&quot;')}">` : ''}</div>
+      <div class="ph">${coverUrl ? `<img loading="lazy" src="${coverUrl}" alt="${a.title.replace(/"/g, '&quot;')}" data-proxy="${coverUrl}" data-title="${a.title.replace(/"/g, '&quot;')}" decoding="async" referrerpolicy="no-referrer" onerror="__coverFail(this)">` : ''}</div>
       ${a.score ? `<span class="rate">★ ${Number(a.score).toFixed(1)}</span>` : ''}
       <div class="meta"><b>${a.title}</b><small>${[a.year, a.type].filter(Boolean).join(' • ')}</small></div>
     </a>`;

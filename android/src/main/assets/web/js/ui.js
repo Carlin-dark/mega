@@ -12,14 +12,15 @@ export function apiUrl(path = '') {
 
 export const img = (u, alt = '') =>
   u
-    ? `<img loading="lazy" decoding="async" referrerpolicy="no-referrer" src="${apiUrl(`/img?u=${encodeURIComponent(u)}`)}" alt="${String(alt || '').replace(/"/g, '&quot;')}">`
+    ? `<img loading="lazy" decoding="async" referrerpolicy="no-referrer" src="${apiUrl(`/img?u=${encodeURIComponent(u)}`)}" data-proxy="${apiUrl(`/img?u=${encodeURIComponent(u)}`)}" data-title="${String(alt || '').replace(/"/g, '&quot;')}" alt="${String(alt || '').replace(/"/g, '&quot;')}" onerror="__coverFail(this)">`
     : '';
 
 export function cardHTML(item, source) {
   const src = item.source || source || savedSource();
   const q = new URLSearchParams({ source: src, slug: item.slug }).toString();
+  const cover = item.poster || item.cover || item.image || item.thumb || item.thumbnail || null;
   return `<a class="card" href="detail.html?${q}">
-    <div class="ph">${img(item.poster || item.cover, item.title)}</div>
+    <div class="ph">${img(cover, item.title)}</div>
     ${item.type ? `<span class="badge">${item.type[0]}</span>` : ''}
     ${item.score ? `<span class="rate">★ ${Number(item.score).toFixed(1)}</span>` : ''}
     <div class="meta"><b>${item.title}</b>
