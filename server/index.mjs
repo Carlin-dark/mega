@@ -67,6 +67,53 @@ const dedupe = (list) => {
   return list.filter((c) => c.slug && !seen.has(`${c.source || ''}:${c.slug}`) && seen.add(`${c.source || ''}:${c.slug}`));
 };
 
+/* ===== complemento de capa em lote (home / seasons / calendar) ===== */
+const coverCache = new Map();
+const COVER_CACHE_TTL = 24 * 60 * 60 * 1000;
+
+async function fillMissingCovers(items, maxConcurrent = 6) {
+  if (!Array.isArray(items) || !items.length) return items;
+  const missing = items.filter((i) => !i.cover && !i.poster);
+  if (!missing.length) return items;
+
+  const uniqueTitles = [...new Set(missing.map((i) => i.title).filter(Boolean))];
+  const results = new Map();
+
+  for (let i = 0; i < uniqueTitles.length; i += maxConcurrent) {
+    const batch = uniqueTitles.slice(i, i + maxConcurrent);
+    const settled = await Promise.allSettled(
+      batch.map(async (title) => {
+        const key = String(title).toLowerCase().trim();
+        const cached = coverCache.get(key);
+        if (cached && Date.now() - cached.t < COVER_CACHE_TTL) {
+          return { title, cover: cached.cover };
+        }
+        try {
+          const ext = await fetchExternalAnime(title);
+          if (ext?.cover) {
+            coverCache.set(key, { cover: ext.cover, t: Date.now() });
+            return { title, cover: ext.cover };
+          }
+        } catch {}
+        return { title, cover: null };
+      })
+    );
+    settled.forEach((s) => {
+      if (s.status === 'fulfilled' && s.value?.cover) {
+        results.set(String(s.value.title).toLowerCase().trim(), s.value.cover);
+      }
+    });
+  }
+
+  return items.map((i) => {
+    if (i.cover || i.poster) return i;
+    const key = String(i.title || '').toLowerCase().trim();
+    const cover = results.get(key);
+    if (cover) return { ...i, cover, poster: cover };
+    return i;
+  });
+}
+
 const budget = (p, ms) => Promise.race([p, new Promise((_, rej) => setTimeout(() => rej(new Error('timeout')), ms))]);
 
 const normTitle = (s = '') =>
@@ -192,7 +239,17 @@ app.get(['/api/home', '/api/home/:source'], async (req, res) => {
       { id: 'top', title: 'Em Alta', items: top },
     ];
 
-    return ok(res, { source: src.meta.id, hero, sections }, 45);
+    const heroFilled = await fillMissingCovers(hero, 4);
+    /* FIX: complementa capa em ambas as seções (antes top ficava sem fallback) */
+    const sectionsFilled = [];
+    for (const sec of sections) {
+      sectionsFilled.push({
+        ...sec,
+        items: await fillMissingCovers(sec.items, sec.id === 'top' ? 6 : 4),
+      });
+    }
+
+    return ok(res, { source: src.meta.id, hero: heroFilled, sections: sectionsFilled }, 45);
   }
 
   ok(res, { source: first.meta.id, hero: [], sections: [] }, 15);
@@ -210,7 +267,8 @@ app.get(['/api/trending', '/api/trending/:source'], async (req, res) => {
     try {
       const pool = await budget(trendingPool(src), 15000);
       if (!pool || pool.length < 4) continue;
-      const items = rotate(pool, daySeed()).slice(0, 30);
+      /* FIX: complementa capa ausente antes de responder */
+      const items = await fillMissingCovers(rotate(pool, daySeed()).slice(0, 30), 6);
       cacheSet(key, items);
       return ok(res, { source: src.meta.id, items }, 600);
     } catch {}
@@ -561,7 +619,7 @@ async function seasonPayload(year, season) {
     } catch {}
   }
 
-  const payload = { year, season, items };
+  const payload = { year, season, items: await fillMissingCovers(items, 6) };
   seasonCache.set(key, { t: Date.now(), v: payload });
   return payload;
 }
@@ -569,29 +627,20 @@ async function seasonPayload(year, season) {
 app.get('/api/seasons', async (_req, res) => {
   try {
     const d = await budget(jikan.now(), 12000);
-    ok(res, { items: asItems(d) }, 900);
+    ok(res, { items: await fillMissingCovers(asItems(d), 6) }, 900);
   } catch {
     ok(res, { items: [] }, 60);
   }
 });
 
-app.get('/api/seasons/:year/:season', async (req, res) => {
-  const year = Number(req.params.year);
-  const season = String(req.params.season || '').toLowerCase();
-  if (!year || !season) return res.json({ year, season, items: [] });
+/* FIX: /api/seasons/:year/:season — usado por web/js/calendar.js.
+   Retorna array puro (não { items }) para compat com o normalize() do front. */
+app.get(['/api/seasons/:year/:season', '/api/calendar'], async (req, res) => {
+  const year = Math.max(1900, Math.min(2100, Number(req.params.year || req.query.year) || new Date().getFullYear()));
+  const season = String(req.params.season || req.query.season || 'winter').toLowerCase();
   try {
-    ok(res, await seasonPayload(year, season), 900);
-  } catch (e) {
-    fail(res, e);
-  }
-});
-
-app.get('/api/calendar', async (req, res) => {
-  const now = new Date();
-  const year = Number(req.query.year) || now.getFullYear();
-  const season = String(req.query.season || '').toLowerCase() || 'winter';
-  try {
-    ok(res, await seasonPayload(year, season), 300);
+    const payload = await seasonPayload(year, season);
+    ok(res, payload.items || [], 900);
   } catch (e) {
     fail(res, e);
   }

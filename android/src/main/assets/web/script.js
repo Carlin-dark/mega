@@ -188,10 +188,24 @@ async function getPosterFallback(title) {
   const clean = String(title).replace(/\b(dub\w*|leg\w*|temporada\w*|\d+ª?|eps?\.?\s*\d+)\b/gi, '').trim();
   if (posterFallbackCache[clean]) return posterFallbackCache[clean];
 
+  // 1) tenta o endpoint dedicado /api/external/poster (cascata AniList/Jikan/Kitsu/ANN)
   try {
     const ctrl = new AbortController();
     const t = setTimeout(() => ctrl.abort(), 5000);
-    const r = await fetch(apiUrl(`/api/search?q=${encodeURIComponent(clean)}`), { signal: ctrl.signal });
+    const r = await fetch(`${API}/api/external/poster?q=${encodeURIComponent(clean)}`, { signal: ctrl.signal });
+    clearTimeout(t);
+    const d = await r.json();
+    if (d?.url) {
+      posterFallbackCache[clean] = d.url;
+      return d.url;
+    }
+  } catch {}
+
+  // 2) fallback: busca agregada nas fontes do site
+  try {
+    const ctrl = new AbortController();
+    const t = setTimeout(() => ctrl.abort(), 5000);
+    const r = await fetch(`${API}/api/search?q=${encodeURIComponent(clean)}`, { signal: ctrl.signal });
     clearTimeout(t);
     const d = await r.json();
     const results = Array.isArray(d) ? d : (d?.results || []);
@@ -449,13 +463,15 @@ function card(a, ep, srcOverride) {
     <div class="pl"><span>${ICONS.play}</span></div>
     <div class="cap"><b>${titleEsc}</b><small>${subtitle}</small></div>`;
   if (!c) {
+    // fallback imediato ao montar o card (não espera o onerror)
     getPosterFallback(a.title).then(u => {
+      const im = el.querySelector('img');
+      if (!im) return;
       if (u) {
-        const im = el.querySelector('img');
-        if (im) im.src = u;
+        im.dataset.proxy = u;
+        im.src = u;
       } else {
-        const im = el.querySelector('img');
-        if (im) im.src = PLACEHOLDER;
+        im.src = PLACEHOLDER;
       }
     });
   }
@@ -540,7 +556,7 @@ if (document.body.dataset.page === 'home') {
   let currentSource = store.get('source', 'animesonlinecc');
   let availableSources = DEFAULT_SOURCES;
 
-  const paintHero = () => {
+const paintHero = () => {
     const a = heroPool[hi % heroPool.length];
     if (!a) return;
     let c = cover(a);
@@ -555,7 +571,7 @@ if (document.body.dataset.page === 'home') {
         <p>${esc(a.synopsis || 'Assista agora, legendado ou dublado.')}</p>
         <div class="row">
           <a class="btn" href="detail.html?source=${encodeURIComponent(currentSource)}&slug=${encodeURIComponent(a.slug)}">${ICONS.play} Play</a>
-          <button class="btn circle" id="hero-fav" aria-label="Salvar"></button>
+          <button class="btn circle" id="hero-fav" aria-label=" salvar"></button>
           <span class="pager">${(hi % heroPool.length) + 1} / ${heroPool.length}</span>
         </div>
       </div>
@@ -571,6 +587,7 @@ if (document.body.dataset.page === 'home') {
       toast(on ? 'Salvo na lista' : 'Removido');
     };
     if (!c) {
+      /* FIX: fallback imediato para a capa do hero (consulta /api/external/poster) */
       getPosterFallback(a.title).then(u => {
         if (u) { a.cover = u; paintHero(); }
       });
