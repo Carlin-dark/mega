@@ -7,6 +7,7 @@ import { fileURLToPath } from 'node:url';
 import { UA_STRING, headersFor, fetchText } from './lib/http.mjs';
 import { getSource, listSources, DEFAULT_SOURCE } from './sources/registry.mjs';
 import { isAnimePageUrl, isJunkMedia, isBloggerEmbed } from './lib/stream.mjs';
+import { freshHtml, extractEpisodeSources, episodeCandidates } from './lib/episode.mjs';
 import * as jikan from './sources/jikan.mjs';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
@@ -23,6 +24,11 @@ app.use((_req, res, next) => {
 const ok = (res, data, max = 60) => res.set('cache-control', `public, max-age=${max}`).json(data);
 const fail = (res, err, code = 502) => res.status(code).json({ error: String(err?.message || err) });
 const pick = (req, explicitSource) => getSource(explicitSource || req.query.source || req.params.source);
+
+const dedupeByUrl = (list = []) => {
+  const seen = new Set();
+  return list.filter((x) => x?.url && !seen.has(x.url) && seen.add(x.url));
+};
 
 const cardOf = (a, sourceId) => ({
   slug: a.slug,
@@ -188,6 +194,7 @@ app.get(['/api/anime/:slug', '/api/anime/:source/:slug'], async (req, res) => {
 app.get(['/api/streams/:slug/:ep', '/api/streams/:source/:slug/:ep'], async (req, res) => {
   /* FIX: no-store desde a entrada — inclusive no erro, que antes ia cacheável para o cliente */
   res.set('cache-control', 'no-store, max-age=0, must-revalidate');
+  res.set('pragma', 'no-cache');
 
   const season = Number(req.query.season) || 1;
   const audio = req.query.audio === 'dub' ? 'dub' : 'leg';
@@ -207,21 +214,50 @@ app.get(['/api/streams/:slug/:ep', '/api/streams/:source/:slug/:ep'], async (req
     } catch {}
 
     const out = await budget(Promise.resolve(src.streams(targetSlug, resolvedEpId, audio, season)), 16000);
-    /* FIX: bg.mp4 e assets de tema não entram como episódio */
-    const sources = (out.sources || [])
-      .filter((x) => x.url && !isAnimePageUrl(x.url) && !isJunkMedia(x.url))
-      .map((x, i) => ({
-        url: x.url,
-        label: x.label || x.quality || `Fonte ${i + 1}`,
-        quality: x.quality || 'auto',
-        mime: x.mime || (x.hls ? 'application/vnd.apple.mpegurl' : 'video/mp4'),
-        hls: Boolean(x.hls),
-        referer: x.referer || out.pageUrl || src.meta.base,
-        itag: x.itag || 900 + i,
-        expiresAt: x.expiresAt || null,
-      }));
 
-    const validIframes = (out.iframes || []).filter((u) => u && !isAnimePageUrl(u));
+    /* FIX: resolução FRESCA via HTML bruto da página do episódio.
+       O token/URL do Blogger é temporário, então o HTML atual é buscado a cada clique
+       (fetch leve com UA/headers + anti-cache _t= + no-store). Sem navegador headless. */
+    const pageCandidates = [...new Set([
+      out.pageUrl,
+      ...episodeCandidates(src.meta.base, targetSlug, season, epNum),
+    ].filter(Boolean))].slice(0, 2);
+
+    const freshBlogger = [];
+    const freshDirect = [];
+    let freshPage = null;
+
+    for (const pageUrl of pageCandidates) {
+      const html = await freshHtml(pageUrl, `${src.meta.base}/`);
+      if (!html) continue;
+      const found = extractEpisodeSources(html, src.meta.base);
+      if (found.direct.length) freshDirect.push(...found.direct);
+      if (found.blogger.length) {
+        freshBlogger.push(...found.blogger);
+        freshPage = pageUrl;
+        break;
+      }
+    }
+
+    /* FIX: bg.mp4 e assets de tema não entram como episódio */
+    const sources = dedupeByUrl([
+      ...(out.sources || [])
+        .filter((x) => x.url && !isAnimePageUrl(x.url) && !isJunkMedia(x.url))
+        .map((x, i) => ({
+          url: x.url,
+          label: x.label || x.quality || `Fonte ${i + 1}`,
+          quality: x.quality || 'auto',
+          mime: x.mime || (x.hls ? 'application/vnd.apple.mpegurl' : 'video/mp4'),
+          hls: Boolean(x.hls),
+          referer: x.referer || out.pageUrl || src.meta.base,
+          itag: x.itag || 900 + i,
+          expiresAt: x.expiresAt || null,
+        })),
+      ...freshDirect,
+    ]);
+
+    const validIframes = [...new Set([...(out.iframes || []), ...freshBlogger])]
+      .filter((u) => u && !isAnimePageUrl(u) && !isJunkMedia(u));
     /* FIX: blogger na frente — é o embed que realmente reproduz */
     const orderedIframes = [...validIframes].sort((a, b) => Number(isBloggerEmbed(b)) - Number(isBloggerEmbed(a)));
     const iframe = orderedIframes[0] || null;
@@ -244,7 +280,7 @@ app.get(['/api/streams/:slug/:ep', '/api/streams/:source/:slug/:ep'], async (req
         iframes: orderedIframes,
         resolvedAt: Date.now(),
         expiresAt: sources.reduce((min, s) => (s.expiresAt && (!min || s.expiresAt < min) ? s.expiresAt : min), null),
-        pageUrl: out.pageUrl || null,
+        pageUrl: freshPage || out.pageUrl || null,
       },
     };
   };

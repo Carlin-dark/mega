@@ -16,6 +16,8 @@ const LOAD_TIMEOUT = 12000;
 const autoNextOn = () => (localStorage.getItem('ma:auto_next') || 'on') !== 'off';
 const autoFsOn = () => (localStorage.getItem('ma:auto_fs') || 'on') !== 'off';
 
+const isBloggerEmbed = (u = '') => /blogger\.com\/video\.g|video\.g\?token=/i.test(String(u || ''));
+
 const plyrEl = $('#video');
 const player = plyrEl ? new Plyr(plyrEl, {
   controls: ['play-large', 'play', 'progress', 'current-time', 'duration', 'mute', 'volume', 'settings', 'pip', 'fullscreen'],
@@ -172,14 +174,26 @@ async function resolveStream() {
   const t = setTimeout(() => ctrl.abort(), 15000);
   let data = null;
   try {
-    const r = await fetch(apiUrl(`/api/streams/${encodeURIComponent(slug)}/${encodeURIComponent(ep)}?${qs}`), { signal: ctrl.signal });
+    /* FIX: requisição fresca — sem HTML/token em cache (links expiram) */
+    const r = await fetch(apiUrl(`/api/streams/${encodeURIComponent(slug)}/${encodeURIComponent(ep)}?${qs}&_t=${Date.now()}`), {
+      cache: 'no-store',
+      headers: { accept: 'application/json', 'cache-control': 'no-cache, no-store', pragma: 'no-cache' },
+      signal: ctrl.signal,
+    });
     data = await r.json();
   } catch { data = null; } finally { clearTimeout(t); }
 
   if (!data) { errorScreen(); return; }
 
   const list = (data.sources || data.streams || []).filter((s) => (s.url || s.proxyUrl) && !isSiteAnimePage(s.url || s.proxyUrl));
-  lastIframe = data.iframe && !isSiteAnimePage(data.iframe) ? data.iframe : (data.iframes || []).find((u) => u && !isSiteAnimePage(u)) || null;
+  const blogger = (data.iframes || []).find((u) => u && isBloggerEmbed(u));
+  lastIframe = blogger || (data.iframe && !isSiteAnimePage(data.iframe) ? data.iframe : null) || (data.iframes || []).find((u) => u && !isSiteAnimePage(u)) || null;
+
+  /* FIX: embed do Blogger reproduz — vai direto no iframe do stage */
+  if (blogger && renderIframePlayer(blogger)) {
+    status(`Player embed carregado (${source}).`);
+    return;
+  }
 
   if (list.length) {
     list.sort((a, b) => (Number(b.itag) || 0) - (Number(a.itag) || 0));
