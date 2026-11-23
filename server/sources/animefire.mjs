@@ -56,7 +56,8 @@ export async function anime(slug) {
   const title = cleanText(html.match(/<h1[^>]*>([\s\S]*?)<\/h1>/)?.[1]) || titleFromSlug(slug);
   const eps = [];
   for (const m of html.matchAll(/href="([^"]*\/anime\/[^"\/]+\/(\d+))"[^>]*>/gi)) {
-    eps.push({ id: m[1], number: Number(m[2]), title: `Episodio ${m[2]}`, audio: ['leg', 'dub'] });
+    const number = Number(m[2]) || eps.length + 1;
+    eps.push({ id: m[1], number, title: `Episodio ${number}`, audio: ['leg', 'dub'] });
   }
   return {
     source: meta.id, slug, title,

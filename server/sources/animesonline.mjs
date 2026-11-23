@@ -1,15 +1,12 @@
 import { fetchText } from '../lib/http.mjs';
 import { absUrl, cleanText, decodeEntities, titleFromSlug, uniqueBy } from '../lib/text.mjs';
 import { readRsc, readJsonKey } from '../lib/next.mjs';
-import { resolveStreams } from '../lib/stream.mjs';
+import { resolveStreams, isAnimePageUrl, isBlockedEmbed } from '../lib/stream.mjs';
 
 const BASE = 'https://animesonline.blue';
 const HEADERS = { referer: `${BASE}/` };
 
 const CARD_RE = /<a\b[^>]*href="([^"]*\/anime\/[^"?#]+)"[^>]*>([\s\S]*?)<\/a>/gi;
-const EP_BTN_RE = /title="Epis[oó]dio\s*(\d+)"[\s\S]{0,400}?data-(?:ep|episode|id)="([^"]+)"/gi;
-const EP_BTN_RE2 = /data-(?:ep|episode|id)="([^"]+)"[\s\S]{0,400}?title="Epis[oó]dio\s*(\d+)"/gi;
-const SEASON_BTN_RE = /title="Temporada\s*(\d+)"[\s\S]{0,300}?data-(?:season|temporada)="([^"]+)"/gi;
 
 function cover(inner) {
   const next = inner.match(/\/_next\/image\?url=([^"'&]+)/);
@@ -62,6 +59,39 @@ export const meta = {
   audio: ['leg', 'dub'],
 };
 
+function numberFrom(text, fallback) {
+  const m = String(text || '').match(/(\d{1,4})/);
+  return m ? Number(m[1]) : fallback;
+}
+
+function episodesFromHtml(html, slug) {
+  const out = [];
+  const add = (id, number, title) => {
+    if (!id) return;
+    out.push({ id: String(id), number, title: title || `Episodio ${number}`, audio: ['leg', 'dub'] });
+  };
+
+  const linkRe = /(?:href|data-href)="([^"]*[?&](?:ep|episodio|episodioId|capitulo)=([^"&]+)[^"]*)"[^>]*>([\s\S]{0,180}?)</gi;
+  for (const m of html.matchAll(linkRe)) {
+    const label = cleanText(m[3]);
+    add(m[2], numberFrom(label, out.length + 1), label || null);
+  }
+
+  const pathRe = new RegExp(`href="[^"]*\\/anime\\/${slug}\\/(?:episodio\\/)?(\\d+)"`, 'gi');
+  for (const m of html.matchAll(pathRe)) add(m[1], Number(m[1]), null);
+
+  const dataRe = /data-(?:ep|episode|episodio|id)="([^"]+)"[^>]*>([\s\S]{0,120}?)</gi;
+  for (const m of html.matchAll(dataRe)) {
+    const label = cleanText(m[2]);
+    add(m[1], numberFrom(label, out.length + 1), label || null);
+  }
+
+  const titleRe = /title="Epis[oó]dio\s*(\d+)"[\s\S]{0,300}?(?:data-[a-z]+|href)="([^"]+)"/gi;
+  for (const m of html.matchAll(titleRe)) add(m[2], Number(m[1]), `Episodio ${m[1]}`);
+
+  return uniqueBy(out, (e) => `${e.number}|${e.id}`).sort((a, b) => a.number - b.number);
+}
+
 export async function home() {
   const res = await fetchText(BASE, { ...HEADERS, cacheTtl: 45_000 });
   if (!res.ok) throw new Error(`home ${res.status}`);
@@ -87,7 +117,6 @@ export async function home() {
 
   const pool = sections.flatMap((s) => s.items);
   const hero = uniqueBy(pool, (c) => c.slug).slice(0, 5).map((c) => ({ ...c, banner: c.poster }));
-
   return { hero, sections };
 }
 
@@ -151,16 +180,31 @@ export async function anime(slug) {
   const temporadasRaw = serie.temporadas || readJsonKey(rsc, 'temporadas') || [];
   const idOf = (v) => (typeof v === 'string' ? v : v?.id ?? v?.episodio ?? v?.slug ?? v?.ep ?? null);
 
+  const numOf = (e, i) => {
+    const raw = e.numero ?? e.num ?? e.ep ?? e.episodio ?? e.n ?? e.ordem ?? e.posicao;
+    if (raw !== null && raw !== undefined && raw !== '') {
+      const n = Number(raw);
+      if (Number.isFinite(n) && n > 0) return n;
+    }
+    const t = String(e.titulo || e.title || e.nome || '');
+    const m = t.match(/(\d{1,4})/);
+    if (m) return Number(m[1]);
+    return i + 1;
+  };
+
   const seasons = temporadasRaw.map((t, i) => {
-    const eps = (t.eps || t.episodios || []).map((e) => ({
-      id: idOf(e),
-      number: Number(e.numero ?? e.ep ?? e.episodio ?? 0),
-      title: e.titulo || e.title || `Episodio ${e.numero ?? ''}`.trim(),
-      thumb: absUrl(e.capa || e.thumb, BASE),
-      duration: e.tempos || e.duracao || null,
-      audio: [idOf(e.leg) ? 'leg' : null, idOf(e.dub) ? 'dub' : null].filter(Boolean),
-      ids: { leg: idOf(e.leg), dub: idOf(e.dub) },
-    })).filter((e) => e.id || e.ids.leg || e.ids.dub);
+    const eps = (t.eps || t.episodios || []).map((e, idx) => {
+      const number = numOf(e, idx);
+      return {
+        id: idOf(e) ?? String(number),
+        number,
+        title: e.titulo || e.title || e.nome || `Episodio ${number}`,
+        thumb: absUrl(e.capa || e.thumb, BASE),
+        duration: e.tempos || e.duracao || null,
+        audio: [idOf(e.leg) ? 'leg' : null, idOf(e.dub) ? 'dub' : null].filter(Boolean),
+        ids: { leg: idOf(e.leg) ?? String(number), dub: idOf(e.dub) ?? String(number) },
+      };
+    }).filter((e) => e.id || e.ids.leg || e.ids.dub);
     return {
       number: Number(t.numero ?? t.temporada ?? i + 1),
       title: t.titulo || t.title || `Temporada ${t.numero ?? i + 1}`,
@@ -169,24 +213,8 @@ export async function anime(slug) {
   }).filter((s) => s.episodes.length);
 
   if (!seasons.length) {
-    const bySeason = new Map();
-    for (const m of html.matchAll(SEASON_BTN_RE)) {
-      bySeason.set(m[2], { number: Number(m[1]), title: `Temporada ${m[1]}`, episodes: [] });
-    }
-    const grab = (re, swap) => {
-      for (const m of html.matchAll(re)) {
-        const num = Number(swap ? m[2] : m[1]);
-        const id = swap ? m[1] : m[2];
-        const target = bySeason.get(id) || { number: 1, title: 'Temporada 1', episodes: [] };
-        if (!bySeason.has(id)) bySeason.set(id, target);
-        target.episodes.push({ id, number: num, title: `Episodio ${num}`, audio: ['leg', 'dub'] });
-      }
-    };
-    grab(EP_BTN_RE, false);
-    grab(EP_BTN_RE2, true);
-    for (const s of bySeason.values()) if (s.episodes.length) seasons.push(s);
-    seasons.sort((a, b) => a.number - b.number);
-    seasons.forEach((s) => s.episodes.sort((a, b) => a.number - b.number));
+    const eps = episodesFromHtml(html, slug);
+    if (eps.length) seasons.push({ number: 1, title: 'Temporada 1', episodes: eps });
   }
 
   return {
@@ -205,32 +233,86 @@ export async function anime(slug) {
   };
 }
 
-export async function streams(slug, epId, audio = 'leg') {
-  const pageUrl = `${BASE}/anime/${slug}?ep=${encodeURIComponent(epId)}${audio ? `&audio=${audio}` : ''}`;
-  const res = await fetchText(pageUrl, { referer: `${BASE}/anime/${slug}`, cacheTtl: 0 });
-  if (!res.ok) throw new Error(`watch ${res.status}`);
-  const html = res.body;
+export async function streams(slug, epId, audio = 'leg', season = 1) {
+  const id = encodeURIComponent(epId);
+  const candidates = [
+    `${BASE}/anime/${slug}?ep=${id}&t=${season}${audio ? `&audio=${audio}` : ''}`,
+    `${BASE}/anime/${slug}?ep=${id}${audio ? `&audio=${audio}` : ''}`,
+    `${BASE}/anime/${slug}?ep=${id}`,
+    `${BASE}/anime/${slug}/episodio/${id}`,
+  ];
 
   const found = [];
-  for (const m of html.matchAll(/<iframe[^>]+src="([^"]+)"/gi)) {
-    const u = absUrl(decodeEntities(m[1]), BASE);
-    if (u && !/googletagmanager|doubleclick|facebook/.test(u)) found.push(u);
-  }
-  for (const m of html.matchAll(/https?:\/\/[^"'\s\\]+videoplayback[^"'\s\\]*/gi)) {
-    found.push(m[0].replace(/\\u0026/g, '&'));
+  let pageUrl = candidates[0];
+
+  for (const url of candidates) {
+    const res = await fetchText(url, { referer: `${BASE}/anime/${slug}`, cacheTtl: 0 });
+    if (!res.ok) continue;
+    const html = res.body;
+
+    for (const m of html.matchAll(/<iframe[^>]+src="([^"]+)"/gi)) {
+      const u = absUrl(decodeEntities(m[1]), BASE);
+      if (u && !isBlockedEmbed(u) && !isAnimePageUrl(u)) found.push(u);
+    }
+    for (const m of html.matchAll(/https?:\/\/[^"'\s\\]+videoplayback[^"'\s\\]*/gi)) {
+      found.push(m[0].replace(/\\u0026/g, '&'));
+    }
+    for (const m of html.matchAll(/(?:https?:)?\/\/www\.blogger\.com\/video\.g\?token=([A-Za-z0-9_-]+)/g)) {
+      found.push(`https://www.blogger.com/video.g?token=${m[1]}`);
+    }
+    for (const m of html.matchAll(/video\.g\\?\/?\?token=([A-Za-z0-9_-]+)/g)) {
+      found.push(`https://www.blogger.com/video.g?token=${m[1]}`);
+    }
+    for (const m of html.matchAll(/https?:\/\/[^"'\s\\]+\.(?:mp4|m3u8)[^"'\s\\]*/gi)) {
+      const u = m[0].replace(/\\u0026/g, '&').replace(/\\\//g, '/');
+      if (!isAnimePageUrl(u)) found.push(u);
+    }
+
+    if (found.length) {
+      pageUrl = url;
+      break;
+    }
   }
 
-  const iframes = uniqueBy(found, (x) => x);
+  const iframes = uniqueBy(found, (x) => x).filter((u) => !isAnimePageUrl(u));
+  const sources = await resolveStreams(iframes, pageUrl);
+  // Só expõe iframe se for embed de vídeo/player real (nunca página /anime/ do site)
+  const cleanEmbeds = iframes.filter((u) => !/animesonline\.blue\/anime\//i.test(u));
+
   return {
     source: meta.id,
     slug,
     episode: epId,
     audio,
+    season,
     pageUrl,
-    iframes,
+    iframes: cleanEmbeds,
     resolvedAt: Date.now(),
-    sources: await resolveStreams(iframes, pageUrl),
+    sources,
   };
 }
 
-export default { meta, home, catalog, search, anime, streams };
+export async function calendar() {
+  const res = await fetchText(BASE, { ...HEADERS, cacheTtl: 120_000 });
+  if (!res.ok) throw new Error(`calendar ${res.status}`);
+  const rsc = readRsc(res.body);
+  const days = readJsonKey(rsc, 'days') || [];
+  const out = [];
+  for (const d of days) {
+    const day = d.dia || d.day || d.data || d.date || null;
+    const list = d.animes || d.items || d.eps || [];
+    for (const a of list) {
+      const slug = a.slug || a.href?.split('/anime/')[1]?.replace(/[?#].*$/, '');
+      if (!slug) continue;
+      out.push({
+        slug,
+        title: a.titulo || a.title || a.nome || titleFromSlug(slug),
+        cover: absUrl(a.capa || a.cover || a.imagem, BASE),
+        day,
+      });
+    }
+  }
+  return uniqueBy(out, (x) => x.slug);
+}
+
+export default { meta, home, catalog, search, anime, streams, calendar };

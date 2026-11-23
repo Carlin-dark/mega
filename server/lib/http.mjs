@@ -7,7 +7,10 @@ const DEFAULT_TTL = 60_000;
 export function cacheGet(key) {
   const hit = cache.get(key);
   if (!hit) return null;
-  if (hit.exp < Date.now()) { cache.delete(key); return null; }
+  if (hit.exp < Date.now()) {
+    cache.delete(key);
+    return null;
+  }
   return hit.value;
 }
 
@@ -17,6 +20,23 @@ export function cacheSet(key, value, ttl = DEFAULT_TTL) {
   return value;
 }
 
+function headersFor(referer, extra) {
+  return {
+    'user-agent': UA,
+    accept: 'text/html,application/xhtml+xml,application/json;q=0.9,*/*;q=0.8',
+    'accept-language': 'pt-BR,pt;q=0.9,en-US;q=0.7',
+    'sec-ch-ua': '"Chromium";v="131", "Not_A Brand";v="24"',
+    'sec-ch-ua-mobile': '?0',
+    'sec-ch-ua-platform': '"Windows"',
+    'sec-fetch-dest': 'document',
+    'sec-fetch-mode': 'navigate',
+    'sec-fetch-site': referer ? 'same-origin' : 'none',
+    'upgrade-insecure-requests': '1',
+    ...(referer ? { referer } : {}),
+    ...(extra || {}),
+  };
+}
+
 export async function fetchText(url, opts = {}) {
   const { referer, headers = {}, timeout = 20_000, retries = 1, cacheTtl = 0 } = opts;
   const key = `t:${url}`;
@@ -24,7 +44,7 @@ export async function fetchText(url, opts = {}) {
     const hit = cacheGet(key);
     if (hit) return hit;
   }
-  let lastErr;
+  let last = { ok: false, status: 0, url, body: '', headers: new Headers() };
   for (let attempt = 0; attempt <= retries; attempt++) {
     const ctrl = new AbortController();
     const timer = setTimeout(() => ctrl.abort(), timeout);
@@ -32,25 +52,24 @@ export async function fetchText(url, opts = {}) {
       const res = await fetch(url, {
         signal: ctrl.signal,
         redirect: 'follow',
-        headers: {
-          'user-agent': UA,
-          accept: 'text/html,application/xhtml+xml,application/json;q=0.9,*/*;q=0.8',
-          'accept-language': 'pt-BR,pt;q=0.9,en-US;q=0.7',
-          ...(referer ? { referer } : {}),
-          ...headers,
-        },
+        cache: 'no-store',
+        headers: headersFor(referer, headers),
       });
       const body = await res.text();
       const out = { ok: res.ok, status: res.status, url: res.url, body, headers: res.headers };
-      if (cacheTtl && res.ok) cacheSet(key, out, cacheTtl);
-      return out;
+      if (res.ok) {
+        if (cacheTtl) cacheSet(key, out, cacheTtl);
+        return out;
+      }
+      last = out;
+      if (res.status < 400 || res.status >= 500) break;
     } catch (err) {
-      lastErr = err;
+      last = { ok: false, status: 0, url, body: '', headers: new Headers(), error: err?.message };
     } finally {
       clearTimeout(timer);
     }
   }
-  return { ok: false, status: 0, url, body: '', headers: new Headers(), error: lastErr?.message };
+  return last;
 }
 
 export async function fetchJson(url, opts = {}) {
